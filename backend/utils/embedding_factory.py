@@ -4,7 +4,7 @@
 from langchain_huggingface import HuggingFaceEmbeddings
 #引入向量模型的配置文件
 from utils.embedding_config import EmbeddingProvider,EmbeddingConfig
-
+import torch
 #根据配置创建对应的向量模型
 #config 这个参数，应该是一个 EmbeddingConfig 类型的对象。类似：name:str
 def create_embedding_model(config:EmbeddingConfig):
@@ -16,7 +16,7 @@ def create_embedding_model(config:EmbeddingConfig):
         return HuggingFaceEmbeddings(
             model_name=config.model_name,
             model_kwargs={
-                "device":"auto",
+                "device": "cuda" if torch.cuda.is_available() else "cpu",
                 "trust_remote_code":True
             },
             #模型向量归一化
