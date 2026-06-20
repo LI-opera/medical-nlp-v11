@@ -197,3 +197,63 @@ index fbdcdca..27a3b18 100644
 
 - 三个代码文件恢复至批次2/提交 `573cad6` 后的实现；仅保留本条失败实验记录用于追溯。
 - `backend/evaluation/benchmark_results.json` 是失败实验的生成结果，不纳入代码提交。
+
+## 2026-06-20 · V11 批次 3 重构版：弱证据 fallback 弃权门
+
+### 改动目的
+
+- 保留 fallback 处理词典外真实缩写的能力，仅在 coverage 不通过或置信度低于 `0.8` 时安全弃权。
+- 不再使用已回退的 NER 孤立短语过滤，也不强制 fallback 生成 top-k，避免制造“看似医学”的候选幻觉。
+- primary 词典候选不受该门影响。
+
+### 涉及文件
+
+- `backend/services/abbr_service.py`
+  - 仅在 `_get_abbreviation_candidates()` 的 `best_expansion` 选择后增加 fallback 置信度门。
+  - `candidate_source == "fallback"` 且 `coverage_ok` 为假或 `confidence < 0.8` 时，将 `best` 设为 `None`。
+  - 批次2状态机检测到无 `best_expansion` 后不建立 state，原缩写保持不变。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall -q backend\services\abbr_service.py`：通过。
+- `.venv\Scripts\python.exe backend\test_v11_deterministic.py`：通过，输出 `OK`。
+- `git diff --check`：通过。
+- 本地阈值 mock：通过，输出 `FALLBACK_ABSTAIN_GATE_OK`。
+  - fallback confidence `0.79`：弃权。
+  - fallback confidence `0.80`：保留。
+  - primary confidence `0.10`：不受 fallback 门影响，仍保留。
+- 74 例 Benchmark：`70/74`，accuracy `0.9459`；新基线为 `69/74`，accuracy `0.9324`。
+- 分类：single_meaning `10/10`、ambiguous `9/10`、multi_abbreviation `10/10`、coverage_failed `5/5`、low_context_abbreviation `3/5`、negation_preservation `10/10`、casi_ambiguous `17/18`、fallback_should_expand `6/6`。
+- 两个过度弃权护栏均未下降，low_context 从 `2/5` 提升到 `3/5`，满足合入标准。
+- NOP 被弃权并转对；QRS 的 coverage confidence 未低于 `0.8`，仍被保留；LMN 为 primary，不在本批范围。
+- `ambiguous_004` 的 MS 波动属于 primary coverage LLM 噪声，本 fallback 门不会触及该路径。
+
+### 本轮 Git diff
+
+```diff
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index ad4722a..67ab2ca 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -639,6 +639,15 @@ class ABBRService:
+             ]
+ 
+             best = coverage.get("best_expansion")
++
++            # 批次3(攻弃权):对 fallback(非词典)缩写收紧
++            # 词典缩写(primary)是人工策展可信源 → 照常;
++            # fallback 缩写是 LLM 现造的,上下文证据不足就弃权,不替它背书
++            # (治 QRS→"QRS complex"、NOP→"no operation/Nocturnal Oxygen Protocol"、MNO 等过度扩写)
++            if candidate_source == "fallback":
++                conf = coverage.get("confidence") or 0.0
++                if (not coverage.get("coverage_ok")) or conf < 0.8:
++                    best = None
+
+             #将缩写，候选表，候选覆盖情况返回
+             found.append({
+```
+
+### 回退与追溯
+
+- 如需撤销本批，只需回退本批提交；批次1/2逻辑无需改动。
+- `backend/evaluation/benchmark_results.json` 与重构指令文件在本轮开始前已有工作区修改，本批不纳入提交。

@@ -639,6 +639,15 @@ class ABBRService:
             ]
 
             best = coverage.get("best_expansion")
+
+            # 批次3(攻弃权):对 fallback(非词典)缩写收紧
+            # 词典缩写(primary)是人工策展可信源 → 照常;
+            # fallback 缩写是 LLM 现造的,上下文证据不足就弃权,不替它背书
+            # (治 QRS→"QRS complex"、NOP→"no operation/Nocturnal Oxygen Protocol"、MNO 等过度扩写)
+            if candidate_source == "fallback":
+                conf = coverage.get("confidence") or 0.0
+                if (not coverage.get("coverage_ok")) or conf < 0.8:
+                    best = None
               
             #将缩写，候选表，候选覆盖情况返回
             found.append({
