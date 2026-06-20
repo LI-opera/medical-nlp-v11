@@ -54,6 +54,9 @@ class ABBRCandidateCoverageEvaluator:
         5. Do not invent new candidate expansions.
         6. Return only valid JSON.
         7. Do not use markdown.
+        8. From the plausible candidates, choose the SINGLE expansion that best fits the clinical context, and put its exact string into "best_expansion".
+        9. If coverage_ok is false, set "best_expansion" to null.
+        10. "best_expansion" must be copied verbatim from the candidate list; do not invent or reword it.
 
         Return JSON in exactly this format:
         {{
@@ -63,6 +66,7 @@ class ABBRCandidateCoverageEvaluator:
         "plausible_candidates": [
             "candidate expansion here"
         ],
+        "best_expansion": "single best candidate or null",
         "reason": "brief explanation",
         "issues": []
         }}
@@ -82,4 +86,5 @@ class ABBRCandidateCoverageEvaluator:
                 "issues": ["invalid_json"],
                 "raw_output": content
             }
+        parsed.setdefault("best_expansion", None)
         return parsed

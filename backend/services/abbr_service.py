@@ -9,6 +9,7 @@ from services.abbr_candidate_fallback_retriever import ABBRCandidateFallbackRetr
 from services.mapping_support_verifier import MappingSupportVerifier
 from data.abbr_candidates import ABBR_CANDIDATES
 import json
+import re
 #加载环境变量
 import os
 from dotenv import load_dotenv
@@ -240,6 +241,31 @@ class ABBRService:
 
         return rebuilt_text
 
+    def _build_expanded_text_deterministic(self, text: str, chosen: list[dict]) -> str:
+        """确定性扩写:对每个 {abbreviation -> expansion} 按 token 边界替换。
+        - \b...\b 保证不误伤子串(CP 不命中 CPR)
+        - 从后往前替,避免多次替换的 offset 错位
+        - 只替换 chosen 里有 expansion 的项;否定/其它词原样保留
+        """
+        if not chosen:
+            return text
+
+        spans = []
+        for item in chosen:
+            abbr = item.get("abbreviation")
+            expansion = item.get("expansion")
+            if not abbr or not expansion:
+                continue
+            pattern = re.compile(rf"\b{re.escape(abbr)}\b")
+            for match in pattern.finditer(text):
+                spans.append((match.start(), match.end(), expansion))
+
+        spans.sort(key=lambda span: span[0], reverse=True)
+        result = text
+        for start, end, expansion in spans:
+            result = result[:start] + expansion + result[end:]
+        return result
+
     def _filter_mappings_by_context_support(
         self, original_text: str, mappings: list[dict]
     ) -> tuple[list[dict], list[dict]]:
@@ -325,24 +351,31 @@ class ABBRService:
         """
         attempts = []
         
-        #调用缩写扩展函数----返回样式如下
-        # {
-        # "original_text": "Patient has SOB and CP.",
-        # "expanded_text": "Patient has shortness of breath and chest pain.",
-        # "mappings": [
-        #     {"abbreviation": "SOB", "expansion": "shortness of breath"},
-        #     {"abbreviation": "CP", "expansion": "chest pain"}
-        # ]
-        # }
-        current_expansion_result = self.simple_llm_expansion(text)
-        #取出当前扩写文本
-        current_expanded_text = current_expansion_result["expanded_text"]
-        #取出缩写映射
-        current_mappings = current_expansion_result.get("mappings",[])
-        #取出当前的候选集
-        current_abbreviation_candidates = current_expansion_result.get(
-            "abbreviation_candidates",[]
-        )
+        candidate_infos = self._get_abbreviation_candidates(text)
+
+        chosen = []
+        for info in candidate_infos:
+            best = info.get("best_expansion")
+            if not best:
+                continue
+            chosen.append({
+                "abbreviation": info["abbreviation"],
+                "expansion": best,
+                "label": info.get("chosen_label"),
+                "source": info.get("candidate_source"),
+            })
+
+        current_expanded_text = self._build_expanded_text_deterministic(text, chosen)
+        current_mappings = [
+            {
+                "abbreviation": item["abbreviation"],
+                "expansion": item["expansion"],
+                "label": item["label"],
+                "source": item["source"],
+            }
+            for item in chosen
+        ]
+        current_abbreviation_candidates = candidate_infos
 
         mapping_support_results = []
         # V9 Stable：不做 MappingSupportVerifier 过滤
@@ -362,13 +395,11 @@ class ABBRService:
         for attempt_index in range(max_retries+1):
             #只保留真正有expansion的mapping
             #例如 {"abbreviation": "XYZ", "expansion": None} 不应该继续 SNOMED 检索
-            valid_mappings = [
-                mapping for mapping in current_mappings if mapping.get("expansion")
-            ]
+            valid_mappings = current_mappings
 
             #如果一个有效扩写都没有，说明coverage全失败
             #这种情况Reflection也没有候选可修，不要空转重试
-            if not valid_mappings:
+            if not current_mappings:
                 attempt_result = {
                     "attempt": attempt_index + 1,
                     "expanded_text": current_expanded_text,
@@ -567,7 +598,10 @@ class ABBRService:
                         "reason": "No candidates found from primary or fallback retriever.",
                         "issues": ["no_candidates"]
                     },
-                    "candidate_source": "none"
+                    "candidate_source": "none",
+                    "best_expansion": None,
+                    "chosen_label": None,
+                    "chosen_domain": None
                 })
                 continue
             
@@ -583,6 +617,8 @@ class ABBRService:
             filtered_candidates=[
                 candidate for candidate in candidates if candidate["expansion"] in plausible_expansions
             ]
+
+            best = coverage.get("best_expansion")
               
             #将缩写，候选表，候选覆盖情况返回
             found.append({
@@ -590,7 +626,10 @@ class ABBRService:
                 "candidates":candidates,
                 "filtered_candidates":filtered_candidates,
                 "coverage":coverage,
-                "candidate_source":candidate_source
+                "candidate_source":candidate_source,
+                "best_expansion":best,
+                "chosen_label":None,
+                "chosen_domain":None
             })
         return found
 
