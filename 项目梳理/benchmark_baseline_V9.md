@@ -48,6 +48,44 @@
 | **V9 基线** | **0.9200** | 0.40 | 0.90 | 1.00 | 1.00 | 1.00 | 1.00 | — | — | 锚点 |
 | 批次 1 | **0.9400** | 0.40 | **1.00** | 1.00 | 1.00 | 1.00 | 1.00 | ambiguous_004 (MS→mitral stenosis) | 无 | **合入** ✅ net +1,满分类全守,消歧错被治好 |
 | 批次 2 | 0.9400 | 0.40 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 无 | 无 | **合入** ✅ net 持平、无回归;价值在架构(失败隔离+增量+弃权基础设施);QRS/NOP verify 接受未触发弃权→留批次3 |
-| 批次 3 | | | | | | | | | | |
-| 批次 4 | | | | | | | | | | |
-| 批次 5 | | | | | | | | | | |
+| 批次 3(原版) | 0.9000 | — | 0.90 | — | — | — | 0.80 | 无 | MNO新增误扩、NOP换更像医学的假词、ambiguous/cov_failed各掉1 | **回退** ❌ top-k 制造假扩写、NER 拦不住同源幻觉,方向搞反 |
+
+> 上表是 **50 例旧 benchmark**。之后评测集换成 **74 例(+CASI 真实数据)**,锚点重置,见下。
+
+---
+
+## ★ 74 例新基线(CASI 补强后,批次 2 代码,2026-06-20)
+
+评测集从 50 → 74 例(加了 24 个 CASI 真实缩写 case:18 多义消歧 + 6 单义 fallback)。**这是 batch3-rev 起的新锚点,旧的 0.92/0.94 不再直接可比。**
+
+| 指标 | 值 |
+|---|---|
+| Total | 74 |
+| Correct | 69 |
+| **Accuracy** | **0.9324** |
+
+| 类别 | 正确/总 | 备注 |
+|---|---|---|
+| single_meaning | 10/10 | |
+| ambiguous | 9/10 | ambiguous_004(MS)**又翻错**→ LLM temp=0 仍有抖动,此 case 是噪声源 |
+| multi_abbreviation | 10/10 | |
+| coverage_failed | 5/5 | |
+| low_context_abbreviation | 2/5 | ★LMN/QRS/NOP 仍过度扩写(真目标) |
+| negation_preservation | 10/10 | |
+| **casi_ambiguous** | **17/18** | 真实 fallback 消歧基本全对;唯一失败 casi_pcp 是"Primary Care Provider≠physician"的**精确串口径**问题,非真错 |
+| **fallback_should_expand** | **6/6** | BP/HR/RR/ECG/ABG/UA 全扩对 → 过度弃权探测器基线干净 |
+
+**关键解读**:
+- 系统对**真实 fallback 缩写消歧很强**(23/24),证明 fallback 是真能力,**砍掉它是错的**。
+- `casi_ambiguous` + `fallback_should_expand` 现在是 **batch3-rev 的护栏**:弃权门若过度弃权,这两类会立刻塌——过拟合被堵死。
+- `ambiguous_004` 翻错是 **LLM 噪声**(MS 是 primary/词典,弃权门碰不到它);batch3-rev 跑出来若它又翻,别算门的账。
+- `casi_pcp` 暴露**精确串匹配局限**:语义对、用词不同就判错。后续可改 SNOMED concept_id 比对。
+
+### 74 例对照表(batch3-rev 起)
+
+| 批次 | 总体 Acc | low_ctx | casi_ambig | fb_expand | ambiguous | single/multi/neg/cov | 翻对 | 翻错 | 结论 |
+|---|---|---|---|---|---|---|---|---|---|
+| **批次2(新锚点)** | **0.9324** | 0.40 | 17/18 | 6/6 | 0.90 | 10/10·10/10·10/10·5/5 | — | — | 锚点 |
+| batch3-rev | | | | | | | | | |
+| 批次 4 | | | | | | | | | |
+| 批次 5 | | | | | | | | | |

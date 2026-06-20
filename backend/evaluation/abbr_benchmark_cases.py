@@ -478,4 +478,7 @@ ABBR_BENCHMARK_CASES = [
         ],
         "expected_text_contains": "denies chest pain"
     }
+    
 ]
+from evaluation.abbr_benchmark_cases_casi import CASI_BENCHMARK_CASES
+ABBR_BENCHMARK_CASES = ABBR_BENCHMARK_CASES + CASI_BENCHMARK_CASES

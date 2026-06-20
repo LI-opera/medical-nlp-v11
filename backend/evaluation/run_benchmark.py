@@ -1,5 +1,6 @@
 import sys
 import json
+import time
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -72,10 +73,20 @@ def run_benchmark():
     results = []
 
     for case in ABBR_BENCHMARK_CASES:
-        result = service.expand_verify_with_retry(
-            text = case["text"],
-            max_retries=2
-        )
+        result = None
+        for _try in range(3):
+            try:
+                result = service.expand_verify_with_retry(
+                    text=case["text"],
+                    max_retries=2
+                )
+                break
+            except Exception as e:
+                if _try == 2:
+                    print(f"[WARN] {case['id']} failed after retries: {e}")
+                    result = {"final_result": {}, "success": False, "error": str(e)}
+                else:
+                    time.sleep(3)
         
         final_result = result.get("final_result",{})
         predicted_mappings = final_result.get("mappings",[])
