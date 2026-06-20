@@ -7,6 +7,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BACKEND_DIR))
 from evaluation.abbr_benchmark_cases import ABBR_BENCHMARK_CASES
 from services.abbr_service import ABBRService
+from evaluation.concept_match import compare_mappings_snomed
 def normalize_text(text:str) -> str:
     if text is None:
         return None
@@ -94,9 +95,10 @@ def run_benchmark():
             final_result.get("expanded_text","")
         )
 
-        is_correct = compare_mappings(
-            expected_mappings=case["expected_mappings"],
-            predicted_mappings=predicted_mappings
+        is_correct = compare_mappings_snomed(
+            service,
+            case["expected_mappings"],
+            predicted_mappings
         )
         text_check = compare_text_contains(
             final_text=final_expanded_text,
