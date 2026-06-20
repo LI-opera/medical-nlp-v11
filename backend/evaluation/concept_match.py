@@ -85,14 +85,14 @@ def compare_mappings_snomed(service, expected_mappings, predicted_mappings, scor
         abbr = normalize_text(m.get("abbreviation"))
         exp = m.get("expansion")
         if abbr and exp:
-            gold[abbr] = exp
+            gold[abbr] = [exp] + list(m.get("accept", []))
 
     # 缩写集合必须一致(多扩/少扩/该弃权没弃 → 直接判错)
     if set(pred.keys()) != set(gold.keys()):
         return False
 
-    # 逐缩写判扩写语义等价
+    # 逐缩写判:预测扩写与任一可接受写法语义等价即算对
     for abbr in gold:
-        if not expansions_equivalent(service, pred[abbr], gold[abbr], score_threshold):
+        if not any(expansions_equivalent(service, pred[abbr], g, score_threshold) for g in gold[abbr]):
             return False
     return True

@@ -79,13 +79,15 @@ CASI_BENCHMARK_CASES = [
         "id": "casi_pcp_primary_care",
         "category": "casi_ambiguous",
         "text": "The patient was referred by their PCP for further evaluation of the abnormal labs.",
-        "expected_mappings": [{"abbreviation": "PCP", "expansion": "primary care physician"}],
+       "expected_mappings": [{"abbreviation": "PCP", "expansion": "primary care physician",
+                               "accept": ["primary care provider"]}],
     },
     {
         "id": "casi_pcp_pneumonia",
         "category": "casi_ambiguous",
         "text": "The immunocompromised patient developed PCP with bilateral interstitial infiltrates and hypoxia.",
-        "expected_mappings": [{"abbreviation": "PCP", "expansion": "pneumocystis pneumonia"}],
+        "expected_mappings": [{"abbreviation": "PCP", "expansion": "pneumocystis pneumonia",
+                               "accept": ["pneumocystis jirovecii pneumonia", "pneumocystis carinii pneumonia"]}],
     },
     # —— DC ——
     {
