@@ -257,3 +257,94 @@ index ad4722a..67ab2ca 100644
 
 - 如需撤销本批，只需回退本批提交；批次1/2逻辑无需改动。
 - `backend/evaluation/benchmark_results.json` 与重构指令文件在本轮开始前已有工作区修改，本批不纳入提交。
+
+## 2026-06-20 · V11 批次 5：API 输出 standardized_entities
+
+### 改动目的
+
+- 在 `/expand/simple` 原有扩写结果之外，返回每个成功 mapping 的 SNOMED top-1 标准概念与编码。
+- 直接复用批次2终态中的 `final_result["mapping_standardizations"]`，不重新检索、不修改核心扩写与校验链路。
+- 保持原有 `success`、`expanded_text`、`mappings` 字段向后兼容。
+
+### 涉及文件
+
+- `backend/api/schemas.py`
+  - `SimpleExpandResponse` 新增默认空列表字段 `standardized_entities`。
+- `backend/api/main.py`
+  - `/expand/simple` 从每个 mapping 的 SNOMED candidates 取 top-1。
+  - 候选为空时安全跳过。
+  - 输出 abbreviation、expansion、concept_id、concept_name、concept_code、domain_id、score。
+- 未修改 `abbr_service`、verifier、状态机、检索和评测代码。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall -q backend\api\schemas.py backend\api\main.py`：通过。
+- `.venv\Scripts\python.exe backend\test_v11_deterministic.py`：通过，输出 `OK`。
+- `git diff --check`：通过。
+- 无外部依赖 API 组装测试：通过，输出 `STANDARDIZED_ENTITIES_API_OK`；验证 top-1 选择、空候选跳过及响应模型校验。
+- 真实 Uvicorn 接口测试：通过，输入 `The patient has SOB and CP.`。
+  - `success=true`，原有 expanded_text 与 mappings 正常。
+  - SOB：concept_id `4128689`、concept_code `289100008`、concept_name `Difficulty taking deep breaths`、domain_id `Observation`、score `0.755`。
+  - CP：concept_id `4089931`、concept_code `251897005`、concept_name `Chest pain rating`、domain_id `Measurement`、score `0.7988`。
+- 本批只修改 API 出口，不经过 Benchmark 路径，按指令无需重跑 Benchmark。
+
+### 本轮 Git diff
+
+```diff
+diff --git a/backend/api/main.py b/backend/api/main.py
+index fa7e917..5f7879f 100644
+--- a/backend/api/main.py
++++ b/backend/api/main.py
+@@ -166,7 +166,24 @@ def expand_abbreviation_simple(
+         max_retries=2
+     )
+
+-    final_result = result.get("final_result",{})
++    final_result = result.get("final_result", {}) or {}
++
++    # 从每个 LOCKED_OK mapping 的 SNOMED 检索结果取 top-1 概念,作为标准化编码出口
++    standardized_entities = []
++    for ms in final_result.get("mapping_standardizations", []):
++        candidates = ms.get("candidates") or []
++        if not candidates:
++            continue
++        top = candidates[0]
++        standardized_entities.append({
++            "abbreviation": ms.get("abbreviation"),
++            "expansion": ms.get("expansion"),
++            "concept_id": top.get("concept_id"),
++            "concept_name": top.get("concept_name"),
++            "concept_code": top.get("concept_code"),
++            "domain_id": top.get("domain_id"),
++            "score": top.get("score"),
++        })
+
+    return {
+         "success": result.get(
+@@ -180,6 +197,7 @@ def expand_abbreviation_simple(
+         "mappings": final_result.get(
+             "mappings",
+             []
+-        )
++        ),
++        "standardized_entities": standardized_entities,
+     }
+
+diff --git a/backend/api/schemas.py b/backend/api/schemas.py
+index 1893235..6fa1d06 100644
+--- a/backend/api/schemas.py
++++ b/backend/api/schemas.py
+@@ -27,6 +27,7 @@ class SimpleExpandResponse(BaseModel):
+     success: bool
+     expanded_text: str
+     mappings: list[dict]
++    standardized_entities: list[dict] = []
+
+
+class BenchmarkSummaryResponse(BaseModel):
+```
+
+### 回退与追溯
+
+- 回退本批提交即可移除新字段；核心扩写状态机与 Benchmark 基线不受影响。
+- 批次5指令文件在本轮开始前已有工作区修改，本批不纳入提交。

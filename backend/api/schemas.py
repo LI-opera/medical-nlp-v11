@@ -27,6 +27,7 @@ class SimpleExpandResponse(BaseModel):
     success: bool
     expanded_text: str
     mappings: list[dict]
+    standardized_entities: list[dict] = []
 
 
 class BenchmarkSummaryResponse(BaseModel):

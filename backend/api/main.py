@@ -166,7 +166,24 @@ def expand_abbreviation_simple(
         max_retries=2
     )
 
-    final_result = result.get("final_result",{})
+    final_result = result.get("final_result", {}) or {}
+
+    # 从每个 LOCKED_OK mapping 的 SNOMED 检索结果取 top-1 概念,作为标准化编码出口
+    standardized_entities = []
+    for ms in final_result.get("mapping_standardizations", []):
+        candidates = ms.get("candidates") or []
+        if not candidates:
+            continue
+        top = candidates[0]
+        standardized_entities.append({
+            "abbreviation": ms.get("abbreviation"),
+            "expansion": ms.get("expansion"),
+            "concept_id": top.get("concept_id"),
+            "concept_name": top.get("concept_name"),
+            "concept_code": top.get("concept_code"),
+            "domain_id": top.get("domain_id"),
+            "score": top.get("score"),
+        })
 
     return {
         "success": result.get(
@@ -180,6 +197,7 @@ def expand_abbreviation_simple(
         "mappings": final_result.get(
             "mappings",
             []
-        )
+        ),
+        "standardized_entities": standardized_entities,
     }
 
