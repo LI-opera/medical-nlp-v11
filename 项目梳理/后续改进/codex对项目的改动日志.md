@@ -835,3 +835,69 @@ index f4658f9..9ca5795 100644
 
 - 回退本批提交即可恢复旧词典结构与无 domain boost 的排序。
 - Benchmark 生成结果、`medical-v11改进日记.md`、批次5指令和批次4指令均不纳入本批提交。
+
+## 2026-06-21 · V11 批次 6：检索过滤口径修复实验未达门槛，已回退
+
+### 尝试目的
+
+- 将 `score_threshold` 从仅检查 raw score 改为检查 `max(raw_score, rerank_score)`。
+- 让字面匹配或 domain boost 后过线的候选不再被 raw-score filter 二次误删。
+- 保证负 bonus 不会删除 raw score 已达标的候选。
+
+### 本地验证与量化
+
+- 编译与批次1确定性单测：通过。
+- 本地边界测试 `EFFECTIVE_SCORE_FILTER_OK`：通过。
+  - raw `0.55`、rerank 过线的候选被救回。
+  - raw `0.61`、受负 bonus 的候选仍保留。
+  - raw 与 rerank 均不足的候选被过滤。
+- 临时打点 Benchmark 共发现 8 次 retrieve 调用触发救回，合计救回 9 个候选。
+- 涉及 query：`acute` 4 次、`follow` 2 次、`seen` 1 次（救回2个）、`s` 1次。
+- 临时打点代码已删除，未留在主链路。
+
+### Benchmark 门控
+
+- 带临时 print 的同逻辑轮次：`71/74 = 0.9595`。
+- 删除打点后的正式轮1：`70/74 = 0.9459`。
+- 删除打点后的正式轮2：`70/74 = 0.9459`。
+- 两个正式轮都仅新增失败 `ambiguous_004`：MS 在 coverage 阶段选择 `multiple sclerosis`，期望为 `mitral stenosis`。
+- 该消歧发生在 SNOMED 检索与本批 filter 之前，因果上与 effective-score 修复无关，属于已知上游 LLM coverage 波动。
+- 但本批硬门槛要求正式 Benchmark `net >= 0.9595`；两次正式结果均未达标，因此按保守规则不合入代码。
+
+### 本轮回退前 Git diff
+
+```diff
+diff --git a/backend/services/medical_retriever.py b/backend/services/medical_retriever.py
+index e9a40a4..da7bfd9 100644
+--- a/backend/services/medical_retriever.py
++++ b/backend/services/medical_retriever.py
+@@ -85,14 +85,18 @@ class MedicalRetriever:
+         #根据用户数插入检索最相关的医学术语
+         results = self.std_service.search_similar_terms(query=query,limit=top_k)
+         results = self._rerank_results(query, results, domain_boost)
++
+         documents = []
+         for item in results:
+             #如果有过滤条件但是条件不匹配就跳过本轮循环
+             if domain_filter is not None and item["domain_id"]!=domain_filter:
+                 continue
+-            #如果有最低分数限制，分数没达到就跳过
+-            if score_threshold is not None and item["score"] < score_threshold:
+-                continue
++            #如果有最低分数限制：原始分 或 重排分 任一过线即保留
++            #(修复:原来只卡 raw score,会把被 bonus 顶到最前、但 raw 偏低的好候选误删)
++            if score_threshold is not None:
++                effective_score = max(item["score"], item.get("rerank_score", item["score"]))
++                if effective_score < score_threshold:
++                    continue
+             content = (
+                     f"Concept Name:{item['concept_name']}\n"
+                     f"Fully Specified Name:{item.get('FSN', '')}\n"
+```
+
+### 回退与已知限制
+
+- `backend/services/medical_retriever.py` 已恢复至批次4提交 `eb6956d` 的实现。
+- 已知限制继续保留：rerank 与 threshold 使用不同口径，评测集中量化为 8 次调用、9 个候选受影响。
+- 更上游还存在 Milvus 先按 raw score 截断 top-k 的两阶段召回限制，本批未处理。
+- 原有 `benchmark_results.json` 在本轮开始前已有修改，评测后使用备份原样恢复。
