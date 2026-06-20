@@ -1,0 +1,1569 @@
+{
+  "total": 50,
+  "correct": 46,
+  "accuracy": 0.92,
+  "category_stats": {
+    "single_meaning": {
+      "total": 10,
+      "correct": 10
+    },
+    "ambiguous": {
+      "total": 10,
+      "correct": 10
+    },
+    "multi_abbreviation": {
+      "total": 10,
+      "correct": 10
+    },
+    "coverage_failed": {
+      "total": 5,
+      "correct": 5
+    },
+    "low_context_abbreviation": {
+      "total": 5,
+      "correct": 1
+    },
+    "negation_preservation": {
+      "total": 10,
+      "correct": 10
+    }
+  },
+  "results": [
+    {
+      "id": "single_001",
+      "category": "single_meaning",
+      "text": "The patient denies SOB.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient denies shortness of breath.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient denies shortness of breath."
+      },
+      "correct": true
+    },
+    {
+      "id": "single_002",
+      "category": "single_meaning",
+      "text": "The patient has HTN.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has hypertension.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has hypertension."
+      },
+      "correct": true
+    },
+    {
+      "id": "single_003",
+      "category": "single_meaning",
+      "text": "The patient has DM.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has diabetes mellitus.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has diabetes mellitus."
+      },
+      "correct": true
+    },
+    {
+      "id": "single_004",
+      "category": "single_meaning",
+      "text": "The patient developed AKI after dehydration.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "AKI",
+          "expansion": "Acute Kidney Injury"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "AKI",
+          "expansion": "acute kidney injury",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient developed acute kidney injury after dehydration.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient developed acute kidney injury after dehydration."
+      },
+      "correct": true
+    },
+    {
+      "id": "single_005",
+      "category": "single_meaning",
+      "text": "The patient has CAD.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CAD",
+          "expansion": "coronary artery disease"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CAD",
+          "expansion": "coronary artery disease",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has coronary artery disease.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has coronary artery disease."
+      },
+      "correct": true
+    },
+    {
+      "id": "single_006",
+      "category": "single_meaning",
+      "text": "The patient has CHF.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CHF",
+          "expansion": "congestive heart failure"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CHF",
+          "expansion": "congestive heart failure",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has congestive heart failure.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has congestive heart failure."
+      },
+      "correct": true
+    },
+    {
+      "id": "single_007",
+      "category": "single_meaning",
+      "text": "The patient has COPD.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "COPD",
+          "expansion": "chronic obstructive pulmonary disease"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "COPD",
+          "expansion": "chronic obstructive pulmonary disease",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has chronic obstructive pulmonary disease.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has chronic obstructive pulmonary disease."
+      },
+      "correct": true
+    },
+    {
+      "id": "single_008",
+      "category": "single_meaning",
+      "text": "The patient has CKD.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CKD",
+          "expansion": "chronic kidney disease"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CKD",
+          "expansion": "chronic kidney disease",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has chronic kidney disease.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has chronic kidney disease."
+      },
+      "correct": true
+    },
+    {
+      "id": "single_009",
+      "category": "single_meaning",
+      "text": "The patient had MI last year.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "MI",
+          "expansion": "myocardial infarction"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "MI",
+          "expansion": "myocardial infarction",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient had myocardial infarction last year.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient had myocardial infarction last year."
+      },
+      "correct": true
+    },
+    {
+      "id": "single_010",
+      "category": "single_meaning",
+      "text": "The patient underwent CABG.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CABG",
+          "expansion": "coronary artery bypass grafting"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CABG",
+          "expansion": "coronary artery bypass grafting",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient underwent coronary artery bypass grafting.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient underwent coronary artery bypass grafting."
+      },
+      "correct": true
+    },
+    {
+      "id": "ambiguous_001",
+      "category": "ambiguous",
+      "text": "The patient reports CP radiating to the left arm.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient reports chest pain radiating to the left arm.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient reports chest pain radiating to the left arm."
+      },
+      "correct": true
+    },
+    {
+      "id": "ambiguous_002",
+      "category": "ambiguous",
+      "text": "The child has a history of CP since birth.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "cerebral palsy"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "cerebral palsy",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The child has a history of cerebral palsy since birth.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The child has a history of cerebral palsy since birth."
+      },
+      "correct": true
+    },
+    {
+      "id": "ambiguous_003",
+      "category": "ambiguous",
+      "text": "The patient has MS with optic neuritis and limb weakness.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "MS",
+          "expansion": "multiple sclerosis"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "MS",
+          "expansion": "multiple sclerosis",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has multiple sclerosis with optic neuritis and limb weakness.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has multiple sclerosis with optic neuritis and limb weakness."
+      },
+      "correct": true
+    },
+    {
+      "id": "ambiguous_004",
+      "category": "ambiguous",
+      "text": "The patient has MS with a diastolic murmur.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "MS",
+          "expansion": "mitral stenosis"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "MS",
+          "expansion": "mitral stenosis",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has mitral stenosis with a diastolic murmur.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has mitral stenosis with a diastolic murmur."
+      },
+      "correct": true
+    },
+    {
+      "id": "ambiguous_005",
+      "category": "ambiguous",
+      "text": "The patient has RA with joint pain and morning stiffness.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "RA",
+          "expansion": "rheumatoid arthritis"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "RA",
+          "expansion": "Rheumatoid Arthritis",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has Rheumatoid Arthritis with joint pain and morning stiffness.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has Rheumatoid Arthritis with joint pain and morning stiffness."
+      },
+      "correct": true
+    },
+    {
+      "id": "ambiguous_006",
+      "category": "ambiguous",
+      "text": "The patient is on RA for postoperative pain control.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "RA",
+          "expansion": "regional anesthesia"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "RA",
+          "expansion": "regional anesthesia",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient is on regional anesthesia for postoperative pain control.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient is on regional anesthesia for postoperative pain control."
+      },
+      "correct": true
+    },
+    {
+      "id": "ambiguous_007",
+      "category": "ambiguous",
+      "text": "The patient has PE with sudden shortness of breath and chest pain.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "PE",
+          "expansion": "pulmonary embolism"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "PE",
+          "expansion": "pulmonary embolism",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has pulmonary embolism with sudden shortness of breath and chest pain.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has pulmonary embolism with sudden shortness of breath and chest pain."
+      },
+      "correct": true
+    },
+    {
+      "id": "ambiguous_008",
+      "category": "ambiguous",
+      "text": "The patient had a normal PE during the annual visit.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "PE",
+          "expansion": "physical examination"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "PE",
+          "expansion": "physical examination",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient had a normal physical examination during the annual visit.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient had a normal physical examination during the annual visit."
+      },
+      "correct": true
+    },
+    {
+      "id": "ambiguous_009",
+      "category": "ambiguous",
+      "text": "The patient has ASD with social communication difficulties.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "ASD",
+          "expansion": "autism spectrum disorder"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "ASD",
+          "expansion": "Autism Spectrum Disorder",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has Autism Spectrum Disorder with social communication difficulties.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has Autism Spectrum Disorder with social communication difficulties."
+      },
+      "correct": true
+    },
+    {
+      "id": "ambiguous_010",
+      "category": "ambiguous",
+      "text": "The patient has ASD with a left-to-right shunt.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "ASD",
+          "expansion": "atrial septal defect"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "ASD",
+          "expansion": "Atrial Septal Defect",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has Atrial Septal Defect with a left-to-right shunt.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has Atrial Septal Defect with a left-to-right shunt."
+      },
+      "correct": true
+    },
+    {
+      "id": "multi_001",
+      "category": "multi_abbreviation",
+      "text": "The patient has SOB and HTN.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        },
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has shortness of breath and hypertension.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has shortness of breath and hypertension."
+      },
+      "correct": true
+    },
+    {
+      "id": "multi_002",
+      "category": "multi_abbreviation",
+      "text": "The patient has DM and CKD.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus"
+        },
+        {
+          "abbreviation": "CKD",
+          "expansion": "chronic kidney disease"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "CKD",
+          "expansion": "chronic kidney disease",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has diabetes mellitus and chronic kidney disease.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has diabetes mellitus and chronic kidney disease."
+      },
+      "correct": true
+    },
+    {
+      "id": "multi_003",
+      "category": "multi_abbreviation",
+      "text": "The patient has CAD and CHF.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CAD",
+          "expansion": "coronary artery disease"
+        },
+        {
+          "abbreviation": "CHF",
+          "expansion": "congestive heart failure"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CAD",
+          "expansion": "coronary artery disease",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "CHF",
+          "expansion": "congestive heart failure",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has coronary artery disease and congestive heart failure.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has coronary artery disease and congestive heart failure."
+      },
+      "correct": true
+    },
+    {
+      "id": "multi_004",
+      "category": "multi_abbreviation",
+      "text": "The patient developed AKI on CKD.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "AKI",
+          "expansion": "Acute Kidney Injury"
+        },
+        {
+          "abbreviation": "CKD",
+          "expansion": "chronic kidney disease"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "AKI",
+          "expansion": "acute kidney injury",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "CKD",
+          "expansion": "chronic kidney disease",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient developed acute kidney injury on chronic kidney disease.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient developed acute kidney injury on chronic kidney disease."
+      },
+      "correct": true
+    },
+    {
+      "id": "multi_005",
+      "category": "multi_abbreviation",
+      "text": "The patient has COPD and SOB.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "COPD",
+          "expansion": "chronic obstructive pulmonary disease"
+        },
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "COPD",
+          "expansion": "chronic obstructive pulmonary disease",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has chronic obstructive pulmonary disease and shortness of breath.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has chronic obstructive pulmonary disease and shortness of breath."
+      },
+      "correct": true
+    },
+    {
+      "id": "multi_006",
+      "category": "multi_abbreviation",
+      "text": "The patient has HTN, DM, and CAD.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension"
+        },
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus"
+        },
+        {
+          "abbreviation": "CAD",
+          "expansion": "coronary artery disease"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "CAD",
+          "expansion": "coronary artery disease",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has hypertension, diabetes mellitus, and coronary artery disease.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has hypertension, diabetes mellitus, and coronary artery disease."
+      },
+      "correct": true
+    },
+    {
+      "id": "multi_007",
+      "category": "multi_abbreviation",
+      "text": "The patient had MI and later underwent CABG.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "MI",
+          "expansion": "myocardial infarction"
+        },
+        {
+          "abbreviation": "CABG",
+          "expansion": "coronary artery bypass grafting"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "MI",
+          "expansion": "myocardial infarction",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "CABG",
+          "expansion": "coronary artery bypass grafting",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient had myocardial infarction and later underwent coronary artery bypass grafting.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient had myocardial infarction and later underwent coronary artery bypass grafting."
+      },
+      "correct": true
+    },
+    {
+      "id": "multi_008",
+      "category": "multi_abbreviation",
+      "text": "The patient has CHF with SOB.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CHF",
+          "expansion": "congestive heart failure"
+        },
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CHF",
+          "expansion": "congestive heart failure",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has congestive heart failure with shortness of breath.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has congestive heart failure with shortness of breath."
+      },
+      "correct": true
+    },
+    {
+      "id": "multi_009",
+      "category": "multi_abbreviation",
+      "text": "The patient has CP and SOB.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain"
+        },
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has chest pain and shortness of breath.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has chest pain and shortness of breath."
+      },
+      "correct": true
+    },
+    {
+      "id": "multi_010",
+      "category": "multi_abbreviation",
+      "text": "The patient has DM, HTN, and CKD.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus"
+        },
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension"
+        },
+        {
+          "abbreviation": "CKD",
+          "expansion": "chronic kidney disease"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "CKD",
+          "expansion": "chronic kidney disease",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has diabetes mellitus, hypertension, and chronic kidney disease.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has diabetes mellitus, hypertension, and chronic kidney disease."
+      },
+      "correct": true
+    },
+    {
+      "id": "coverage_001",
+      "category": "coverage_failed",
+      "text": "The patient has XYZ.",
+      "success": false,
+      "expected_mappings": [],
+      "predicted_mappings": [
+        {
+          "abbreviation": "XYZ",
+          "expansion": null,
+          "source": "coverage_failed"
+        }
+      ],
+      "final_expanded_text": "The patient has XYZ.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has XYZ."
+      },
+      "correct": true
+    },
+    {
+      "id": "coverage_002",
+      "category": "coverage_failed",
+      "text": "The patient reports QQQ.",
+      "success": false,
+      "expected_mappings": [],
+      "predicted_mappings": [
+        {
+          "abbreviation": "QQQ",
+          "expansion": null,
+          "source": "coverage_failed"
+        }
+      ],
+      "final_expanded_text": "The patient reports QQQ.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient reports QQQ."
+      },
+      "correct": true
+    },
+    {
+      "id": "coverage_003",
+      "category": "low_context_abbreviation",
+      "text": "The patient has ABC and SOB.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "final_expanded_text": "The patient has ABC and shortness of breath.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has ABC and shortness of breath."
+      },
+      "correct": true
+    },
+    {
+      "id": "coverage_004",
+      "category": "coverage_failed",
+      "text": "The patient has HTN and ZZZ.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "ZZZ",
+          "expansion": null,
+          "source": "coverage_failed"
+        }
+      ],
+      "final_expanded_text": "The patient has hypertension and ZZZ.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has hypertension and ZZZ."
+      },
+      "correct": true
+    },
+    {
+      "id": "coverage_005",
+      "category": "low_context_abbreviation",
+      "text": "The patient was evaluated for LMN.",
+      "success": true,
+      "expected_mappings": [],
+      "predicted_mappings": [
+        {
+          "abbreviation": "LMN",
+          "expansion": "lower motor neuron",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient was evaluated for lower motor neuron.",
+      "mapping_correct": false,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient was evaluated for lower motor neuron."
+      },
+      "correct": false
+    },
+    {
+      "id": "coverage_006",
+      "category": "low_context_abbreviation",
+      "text": "The patient has DM and QRS.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "QRS",
+          "expansion": "QRS complex",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has diabetes mellitus and QRS complex.",
+      "mapping_correct": false,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has diabetes mellitus and QRS complex."
+      },
+      "correct": false
+    },
+    {
+      "id": "coverage_007",
+      "category": "coverage_failed",
+      "text": "The patient denies TUV.",
+      "success": false,
+      "expected_mappings": [],
+      "predicted_mappings": [
+        {
+          "abbreviation": "TUV",
+          "expansion": null,
+          "source": "coverage_failed"
+        }
+      ],
+      "final_expanded_text": "The patient denies TUV.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient denies TUV."
+      },
+      "correct": true
+    },
+    {
+      "id": "coverage_008",
+      "category": "low_context_abbreviation",
+      "text": "The patient has COPD and NOP.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "COPD",
+          "expansion": "chronic obstructive pulmonary disease"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "COPD",
+          "expansion": "chronic obstructive pulmonary disease",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "NOP",
+          "expansion": "no operation",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has chronic obstructive pulmonary disease and no operation.",
+      "mapping_correct": false,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has chronic obstructive pulmonary disease and no operation."
+      },
+      "correct": false
+    },
+    {
+      "id": "coverage_009",
+      "category": "low_context_abbreviation",
+      "text": "The patient was admitted with AKI and RST.",
+      "success": false,
+      "expected_mappings": [
+        {
+          "abbreviation": "AKI",
+          "expansion": "Acute Kidney Injury"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "AKI",
+          "expansion": "acute kidney injury"
+        },
+        {
+          "abbreviation": "RST",
+          "expansion": "Renal Stone Therapy"
+        }
+      ],
+      "final_expanded_text": "The patient was admitted with acute kidney injury and Renal Stone Therapy.",
+      "mapping_correct": false,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient was admitted with acute kidney injury and Renal Stone Therapy."
+      },
+      "correct": false
+    },
+    {
+      "id": "coverage_010",
+      "category": "coverage_failed",
+      "text": "The patient has MNO.",
+      "success": false,
+      "expected_mappings": [],
+      "predicted_mappings": [
+        {
+          "abbreviation": "MNO",
+          "expansion": null,
+          "source": "coverage_failed"
+        }
+      ],
+      "final_expanded_text": "The patient has MNO.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has MNO."
+      },
+      "correct": true
+    },
+    {
+      "id": "negation_001",
+      "category": "negation_preservation",
+      "text": "The patient denies CP.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient denies chest pain.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": true,
+        "correct": true,
+        "expected_text_contains": "denies chest pain",
+        "final_text": "The patient denies chest pain."
+      },
+      "correct": true
+    },
+    {
+      "id": "negation_002",
+      "category": "negation_preservation",
+      "text": "The patient denies SOB.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient denies shortness of breath.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": true,
+        "correct": true,
+        "expected_text_contains": "denies shortness of breath",
+        "final_text": "The patient denies shortness of breath."
+      },
+      "correct": true
+    },
+    {
+      "id": "negation_003",
+      "category": "negation_preservation",
+      "text": "The patient has no CP.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has no chest pain.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": true,
+        "correct": true,
+        "expected_text_contains": "no chest pain",
+        "final_text": "The patient has no chest pain."
+      },
+      "correct": true
+    },
+    {
+      "id": "negation_004",
+      "category": "negation_preservation",
+      "text": "The patient has no SOB.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has no shortness of breath.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": true,
+        "correct": true,
+        "expected_text_contains": "no shortness of breath",
+        "final_text": "The patient has no shortness of breath."
+      },
+      "correct": true
+    },
+    {
+      "id": "negation_005",
+      "category": "negation_preservation",
+      "text": "The patient is without CP.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient is without chest pain.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": true,
+        "correct": true,
+        "expected_text_contains": "without chest pain",
+        "final_text": "The patient is without chest pain."
+      },
+      "correct": true
+    },
+    {
+      "id": "negation_006",
+      "category": "negation_preservation",
+      "text": "The patient is without SOB.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient is without shortness of breath.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": true,
+        "correct": true,
+        "expected_text_contains": "without shortness of breath",
+        "final_text": "The patient is without shortness of breath."
+      },
+      "correct": true
+    },
+    {
+      "id": "negation_007",
+      "category": "negation_preservation",
+      "text": "The patient denies CP but reports SOB.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain"
+        },
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient denies chest pain but reports shortness of breath.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": true,
+        "correct": true,
+        "expected_text_contains": "denies chest pain",
+        "final_text": "The patient denies chest pain but reports shortness of breath."
+      },
+      "correct": true
+    },
+    {
+      "id": "negation_008",
+      "category": "negation_preservation",
+      "text": "The patient denies SOB but has CP.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        },
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient denies shortness of breath but has chest pain.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": true,
+        "correct": true,
+        "expected_text_contains": "denies shortness of breath",
+        "final_text": "The patient denies shortness of breath but has chest pain."
+      },
+      "correct": true
+    },
+    {
+      "id": "negation_009",
+      "category": "negation_preservation",
+      "text": "No CP or SOB was reported.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain"
+        },
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "SOB",
+          "expansion": "shortness of breath",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "No chest pain or shortness of breath was reported.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": true,
+        "correct": true,
+        "expected_text_contains": "no chest pain",
+        "final_text": "No chest pain or shortness of breath was reported."
+      },
+      "correct": true
+    },
+    {
+      "id": "negation_010",
+      "category": "negation_preservation",
+      "text": "The patient has HTN but denies CP.",
+      "success": true,
+      "expected_mappings": [
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension"
+        },
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "HTN",
+          "expansion": "hypertension",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "CP",
+          "expansion": "chest pain",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has hypertension but denies chest pain.",
+      "mapping_correct": true,
+      "text_check": {
+        "checked": true,
+        "correct": true,
+        "expected_text_contains": "denies chest pain",
+        "final_text": "The patient has hypertension but denies chest pain."
+      },
+      "correct": true
+    }
+  ]
+}

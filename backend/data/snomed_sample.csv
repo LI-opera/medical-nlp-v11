@@ -1,0 +1,11 @@
+concept_id,concept_name,domain_id,concept_code
+1,Chest pain,Condition,29857009
+2,Diabetes mellitus,Condition,73211009
+3,Hypertension,Condition,38341003
+4,Shortness of breath,Symptom,267036007
+5,Headache,Symptom,25064002
+6,Fever,Symptom,386661006
+7,Cough,Symptom,49727002
+8,Asthma,Condition,195967001
+9,Pneumonia,Condition,233604007
+10,Heart failure,Condition,84114007

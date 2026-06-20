@@ -1,0 +1,16 @@
+services:
+  api:
+    build: .
+    container_name: medical-nlp-api
+
+    ports:
+      - "8000:8000"
+
+    env_file:
+      - backend/.env
+
+    environment:
+      MILVUS_URI: http://host.docker.internal:19530
+      MILVUS_COLLECTION_NAME: concepts_only_name
+
+    restart: unless-stopped

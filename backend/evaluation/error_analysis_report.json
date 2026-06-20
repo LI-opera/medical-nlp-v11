@@ -1,0 +1,202 @@
+{
+  "benchmark_summary": {
+    "total_cases": 50,
+    "correct": 46,
+    "accuracy": 0.92,
+    "category_stats": {
+      "single_meaning": {
+        "total": 10,
+        "correct": 10
+      },
+      "ambiguous": {
+        "total": 10,
+        "correct": 10
+      },
+      "multi_abbreviation": {
+        "total": 10,
+        "correct": 10
+      },
+      "coverage_failed": {
+        "total": 5,
+        "correct": 5
+      },
+      "low_context_abbreviation": {
+        "total": 5,
+        "correct": 1
+      },
+      "negation_preservation": {
+        "total": 10,
+        "correct": 10
+      }
+    }
+  },
+  "failed_summary": {
+    "failed_count": 4,
+    "error_type_summary": {
+      "low_context_over_expansion": 4
+    },
+    "taxonomy_summary": {
+      "Over Expansion": {
+        "Extra Abbreviation Expansion": 4
+      }
+    }
+  },
+  "failed_cases": [
+    {
+      "id": "coverage_005",
+      "category": "low_context_abbreviation",
+      "text": "The patient was evaluated for LMN.",
+      "expected_mappings": [],
+      "predicted_mappings": [
+        {
+          "abbreviation": "LMN",
+          "expansion": "lower motor neuron",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient was evaluated for lower motor neuron.",
+      "system_success": true,
+      "mapping_correct": false,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient was evaluated for lower motor neuron."
+      },
+      "error_type": "low_context_over_expansion",
+      "taxonomy": {
+        "major_type": "Over Expansion",
+        "sub_type": "Extra Abbreviation Expansion",
+        "reason": "系统预测了标准答案中不存在的额外缩写扩写，通常表示低上下文误扩写或候选缺乏上下文支持。",
+        "extra_abbreviations": [
+          "LMN"
+        ],
+        "missing_abbreviations": []
+      }
+    },
+    {
+      "id": "coverage_006",
+      "category": "low_context_abbreviation",
+      "text": "The patient has DM and QRS.",
+      "expected_mappings": [
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "DM",
+          "expansion": "diabetes mellitus",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "QRS",
+          "expansion": "QRS complex",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has diabetes mellitus and QRS complex.",
+      "system_success": true,
+      "mapping_correct": false,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has diabetes mellitus and QRS complex."
+      },
+      "error_type": "low_context_over_expansion",
+      "taxonomy": {
+        "major_type": "Over Expansion",
+        "sub_type": "Extra Abbreviation Expansion",
+        "reason": "系统预测了标准答案中不存在的额外缩写扩写，通常表示低上下文误扩写或候选缺乏上下文支持。",
+        "extra_abbreviations": [
+          "QRS"
+        ],
+        "missing_abbreviations": []
+      }
+    },
+    {
+      "id": "coverage_008",
+      "category": "low_context_abbreviation",
+      "text": "The patient has COPD and NOP.",
+      "expected_mappings": [
+        {
+          "abbreviation": "COPD",
+          "expansion": "chronic obstructive pulmonary disease"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "COPD",
+          "expansion": "chronic obstructive pulmonary disease",
+          "source": "candidate"
+        },
+        {
+          "abbreviation": "NOP",
+          "expansion": "no operation",
+          "source": "candidate"
+        }
+      ],
+      "final_expanded_text": "The patient has chronic obstructive pulmonary disease and no operation.",
+      "system_success": true,
+      "mapping_correct": false,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient has chronic obstructive pulmonary disease and no operation."
+      },
+      "error_type": "low_context_over_expansion",
+      "taxonomy": {
+        "major_type": "Over Expansion",
+        "sub_type": "Extra Abbreviation Expansion",
+        "reason": "系统预测了标准答案中不存在的额外缩写扩写，通常表示低上下文误扩写或候选缺乏上下文支持。",
+        "extra_abbreviations": [
+          "NOP"
+        ],
+        "missing_abbreviations": []
+      }
+    },
+    {
+      "id": "coverage_009",
+      "category": "low_context_abbreviation",
+      "text": "The patient was admitted with AKI and RST.",
+      "expected_mappings": [
+        {
+          "abbreviation": "AKI",
+          "expansion": "Acute Kidney Injury"
+        }
+      ],
+      "predicted_mappings": [
+        {
+          "abbreviation": "AKI",
+          "expansion": "acute kidney injury"
+        },
+        {
+          "abbreviation": "RST",
+          "expansion": "Renal Stone Therapy"
+        }
+      ],
+      "final_expanded_text": "The patient was admitted with acute kidney injury and Renal Stone Therapy.",
+      "system_success": false,
+      "mapping_correct": false,
+      "text_check": {
+        "checked": false,
+        "correct": true,
+        "expected_text_contains": null,
+        "final_text": "The patient was admitted with acute kidney injury and Renal Stone Therapy."
+      },
+      "error_type": "low_context_over_expansion",
+      "taxonomy": {
+        "major_type": "Over Expansion",
+        "sub_type": "Extra Abbreviation Expansion",
+        "reason": "系统预测了标准答案中不存在的额外缩写扩写，通常表示低上下文误扩写或候选缺乏上下文支持。",
+        "extra_abbreviations": [
+          "RST"
+        ],
+        "missing_abbreviations": []
+      }
+    }
+  ]
+}
