@@ -13,6 +13,20 @@ import re
 #加载环境变量
 import os
 from dotenv import load_dotenv
+
+# NER 实体标签 → SNOMED domain_id(库里实际取值:Condition/Observation/Measurement/
+# Procedure/Drug/Spec Anatomic Site/Device 等)。映射不完美没关系——domain_boost 是软加分。
+NER_LABEL_TO_DOMAIN = {
+    "DISEASE_DISORDER": "Condition",
+    "SIGN_SYMPTOM": "Condition",
+    "BIOLOGICAL_STRUCTURE": "Spec Anatomic Site",
+    "MEDICATION": "Drug",
+    "DIAGNOSTIC_PROCEDURE": "Procedure",
+    "THERAPEUTIC_PROCEDURE": "Procedure",
+    "LAB_VALUE": "Measurement",
+    "DETAILED_DESCRIPTION": "Observation",
+}
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(CURRENT_DIR)
 ENV_PATH = os.path.join(BACKEND_DIR, ".env")
@@ -52,6 +66,7 @@ class ABBRService:
         
         # 这些对象内部可能会加载模型，所以放到 __init__ 里复用
         self.standardizer = MedicalStandardizer()
+        self.ner_service = self.standardizer.ner_service
         self.retriever = MedicalRetriever()
         self.verifier = ABBVerifier()
         self.reflector = ABBRReflectionService()
@@ -369,6 +384,7 @@ class ABBRService:
                 "abbreviation": info["abbreviation"],
                 "expansion": best,
                 "label": info.get("chosen_label"),
+                "domain": info.get("chosen_domain"),
                 "source": info.get("candidate_source"),
                 "status": "PENDING",
                 "pool": pool,
@@ -432,6 +448,7 @@ class ABBRService:
                         query=s["expansion"],
                         top_k=10,
                         domain_filter=None,
+                        domain_boost=s.get("domain"),
                         score_threshold=0.6
                     )
                     cand = []
@@ -603,6 +620,11 @@ class ABBRService:
                 )
                 candidates = fallback_result.get("candidates",[])
                 candidate_source = "fallback"
+
+            if candidate_source == "fallback":
+                for candidate in candidates:
+                    _, label, _ = self.ner_service.is_medical(candidate.get("expansion"))
+                    candidate["domain"] = NER_LABEL_TO_DOMAIN.get(label)
             
             #如果primary和fallback都没有候选
             if not candidates:
@@ -648,6 +670,14 @@ class ABBRService:
                 conf = coverage.get("confidence") or 0.0
                 if (not coverage.get("coverage_ok")) or conf < 0.8:
                     best = None
+
+            # batch4:取选中候选的 domain
+            best_domain = None
+            if best:
+                for candidate in candidates:
+                    if candidate.get("expansion") == best:
+                        best_domain = candidate.get("domain")
+                        break
               
             #将缩写，候选表，候选覆盖情况返回
             found.append({
@@ -658,7 +688,7 @@ class ABBRService:
                 "candidate_source":candidate_source,
                 "best_expansion":best,
                 "chosen_label":None,
-                "chosen_domain":None
+                "chosen_domain":best_domain
             })
         return found
 

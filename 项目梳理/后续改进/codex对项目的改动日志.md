@@ -348,3 +348,490 @@ class BenchmarkSummaryResponse(BaseModel):
 
 - 回退本批提交即可移除新字段；核心扩写状态机与 Benchmark 基线不受影响。
 - 批次5指令文件在本轮开始前已有工作区修改，本批不纳入提交。
+
+## 2026-06-20 · V11 批次 4：domain_boost 软约束
+
+### 改动目的
+
+- 为人工词典候选补充 SNOMED domain 元数据，为 fallback 候选使用本地 NER label 推断 domain。
+- 保留 `domain_filter` 硬过滤参数并继续传 `None`；新增 `domain_boost` 仅作排序软加分，不丢弃候选。
+- 将 mapping 选中的 domain 带入批次2状态机与 SNOMED 检索，改善批次5 `standardized_entities` 的 top-1 编码领域。
+- NER 仅产 label/domain，不过滤 fallback、不改变候选数量。
+
+### 涉及文件
+
+- `backend/data/abbr_candidates.py`：全部候选改为带 `expansion/domain` 的字典。
+- `backend/services/abbr_candidate_retriever.py`：适配新词典结构并透传 domain。
+- `backend/services/ner_service.py`：新增复用现有 pipeline 的 `is_medical()`，本批只读取 label。
+- `backend/services/abbr_service.py`：两路候选补齐 chosen_domain，state 携带 domain，检索传入 domain_boost。
+- `backend/services/medical_retriever.py`：新增 domain_boost，domain 命中增加 `0.2` rerank bonus；domain_filter 保持不变。
+
+### 验证结果
+
+- 全 services 与词典编译：通过。
+- 批次1确定性单测：通过，输出 `OK`。
+- 候选词典召回测试：通过，新候选均携带 domain。
+- 本地 domain boost 测试：通过，top-1 从 Measurement 切换到 Condition，状态机实传 `domain_filter=None, domain_boost=Condition`。
+- 真实 CP API：top-1 从批次5的 `Chest pain rating / Measurement`（concept_id `4089931`）切换到 `Chest pain due to pericarditis / Condition`（concept_id `44782774`，concept_code `34791000119103`）。
+- 诚实限制：domain 已对齐 Condition，但概念粒度偏具体，仍受当前 SNOMED 候选库覆盖质量限制。
+- 74 例并行 Benchmark：`71/74 = 0.9595`，与基线持平。
+- 分类：single `10/10`、ambiguous `10/10`、multi `10/10`、coverage_failed `5/5`、low_context `2/5`、negation `10/10`、casi_ambiguous `18/18`、fallback_should_expand `6/6`。
+- 结论：死参数已激活，核心准确率未回退，满足合入标准。
+
+### 本轮 Git diff
+
+以下 diff 按目标文件完整保存。
+
+#### backend/services/ner_service.py
+
+```diff
+diff --git a/backend/services/ner_service.py b/backend/services/ner_service.py
+index fbdcdca..99c15f7 100644
+--- a/backend/services/ner_service.py
++++ b/backend/services/ner_service.py
+@@ -52,6 +52,19 @@ class NERService:
+         #_merge_adjacent_entities就是一个清洗/后处理函数
+         merged_entities = self._merge_adjacent_entities(text,entities)
+         return merged_entities
++
++    def is_medical(self, text: str):
++        """对孤立短语返回 (是否有医学实体, 主 label, 分数)。
++        本批只用其 label 推断 domain,不做候选过滤。
++        """
++        if not text:
++            return False, None, 0.0
++        ents = self.extract_entities(text)
++        if not ents:
++            return False, None, 0.0
++        top = max(ents, key=lambda e: e["score"])
++        return True, top["label"], top["score"]
++
+     def _merge_adjacent_entities(self,text:str,entities:list[dict]):
+         """合并相邻医学实体。例如: chest + pain = chest pain"""
+
+@@ -100,4 +113,4 @@ class NERService:
+
+
+
+-#start和end是word指代词的索引可以通过text[start:end]取出对应的字符串
+\ No newline at end of file
++#start和end是word指代词的索引可以通过text[start:end]取出对应的字符串
+```
+
+<!-- batch4-diff-ner -->
+
+#### backend/services/abbr_candidate_retriever.py
+
+```diff
+diff --git a/backend/services/abbr_candidate_retriever.py b/backend/services/abbr_candidate_retriever.py
+index 95d477a..d56fbba 100644
+--- a/backend/services/abbr_candidate_retriever.py
++++ b/backend/services/abbr_candidate_retriever.py
+@@ -3,17 +3,12 @@ from data.abbr_candidates import ABBR_CANDIDATES
+ class ABBRCandidateRetriever:
+     #医学缩写候选召回器
+     #作用:输入一个医学缩写，返回它可能对应的多个完整医学术语
+-    def retrieve(self,abbreviation:str):
++    def retrieve(self, abbreviation: str):
+         abbr = abbreviation.upper().strip()
+-
+-        candidates = ABBR_CANDIDATES.get(abbr,[])
+-
+-        return[
+-            {
+-                "abbreviation":abbr,
+-                "expansion":expansion
+-            }
+-            for expansion in candidates
++        candidates = ABBR_CANDIDATES.get(abbr, [])
++        return [
++            {"abbreviation": abbr, "expansion": c["expansion"], "domain": c.get("domain")}
++            for c in candidates
+         ]
+     """
+     这种写法等价于
+@@ -24,4 +19,4 @@ class ABBRCandidateRetriever:
+             "expansion":expansion
+         })
+     return results
+-       """
+\ No newline at end of file
++       """
+```
+
+<!-- batch4-diff-candidate -->
+
+#### backend/services/medical_retriever.py
+
+```diff
+diff --git a/backend/services/medical_retriever.py b/backend/services/medical_retriever.py
+index 40a6cca..e9a40a4 100644
+--- a/backend/services/medical_retriever.py
++++ b/backend/services/medical_retriever.py
+@@ -22,7 +22,12 @@ class MedicalRetriever:
+         # 已经创建好 embedding
+         # 已经 load 好 collection
+         self.std_service = StdService()
+-    def _rerank_results(self,query:str,results:list[dict]):
++    def _rerank_results(
++            self,
++            query: str,
++            results: list[dict],
++            domain_boost: str | None = None
++            ):
+         """对检索结果进行简单重排。
+             规则：
+             完全等于 query
+@@ -46,6 +51,8 @@ class MedicalRetriever:
+             #concept_name中包含query
+             elif query_lower in concept_name:
+                 bonus += 0.15
++            if domain_boost is not None and item.get("domain_id") == domain_boost:
++                bonus += 0.2
+             #长术语惩罚措施
+             word_count = len(concept_name)
+             if word_count > 10:
+@@ -70,12 +77,14 @@ class MedicalRetriever:
+             top_k:int=5,
+             #表示过滤条件
+             domain_filter :str|None = None,
++            #表示优先提升的领域，不过滤其他领域
++            domain_boost: str | None = None,
+             #表示过滤的最低分数
+             score_threshold:float | None = None
+             ):
+         #根据用户数插入检索最相关的医学术语
+         results = self.std_service.search_similar_terms(query=query,limit=top_k)
+-        results = self._rerank_results(query,results)
++        results = self._rerank_results(query, results, domain_boost)
+         documents = []
+         for item in results:
+             #如果有过滤条件但是条件不匹配就跳过本轮循环
+@@ -102,4 +111,4 @@ class MedicalRetriever:
+                     "rerank_score":item["rerank_score"]
+                 }
+             })
+-        return documents
+\ No newline at end of file
++        return documents
+```
+
+<!-- batch4-diff-medical -->
+
+#### backend/services/abbr_service.py
+
+```diff
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index 67ab2ca..b9e5928 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -13,6 +13,20 @@ import re
+ #加载环境变量
+ import os
+ from dotenv import load_dotenv
++
++# NER 实体标签 → SNOMED domain_id(库里实际取值:Condition/Observation/Measurement/
++# Procedure/Drug/Spec Anatomic Site/Device 等)。映射不完美没关系——domain_boost 是软加分。
++NER_LABEL_TO_DOMAIN = {
++    "DISEASE_DISORDER": "Condition",
++    "SIGN_SYMPTOM": "Condition",
++    "BIOLOGICAL_STRUCTURE": "Spec Anatomic Site",
++    "MEDICATION": "Drug",
++    "DIAGNOSTIC_PROCEDURE": "Procedure",
++    "THERAPEUTIC_PROCEDURE": "Procedure",
++    "LAB_VALUE": "Measurement",
++    "DETAILED_DESCRIPTION": "Observation",
++}
++
+ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ BACKEND_DIR = os.path.dirname(CURRENT_DIR)
+ ENV_PATH = os.path.join(BACKEND_DIR, ".env")
+@@ -52,6 +66,7 @@ class ABBRService:
+
+         # 这些对象内部可能会加载模型，所以放到 __init__ 里复用
+         self.standardizer = MedicalStandardizer()
++        self.ner_service = self.standardizer.ner_service
+         self.retriever = MedicalRetriever()
+         self.verifier = ABBVerifier()
+         self.reflector = ABBRReflectionService()
+@@ -369,6 +384,7 @@ class ABBRService:
+                 "abbreviation": info["abbreviation"],
+                 "expansion": best,
+                 "label": info.get("chosen_label"),
++                "domain": info.get("chosen_domain"),
+                 "source": info.get("candidate_source"),
+                 "status": "PENDING",
+                 "pool": pool,
+@@ -432,6 +448,7 @@ class ABBRService:
+                         query=s["expansion"],
+                         top_k=10,
+                         domain_filter=None,
++                        domain_boost=s.get("domain"),
+                         score_threshold=0.6
+                     )
+                     cand = []
+@@ -603,6 +620,11 @@ class ABBRService:
+                 )
+                 candidates = fallback_result.get("candidates",[])
+                 candidate_source = "fallback"
++
++            if candidate_source == "fallback":
++                for candidate in candidates:
++                    _, label, _ = self.ner_service.is_medical(candidate.get("expansion"))
++                    candidate["domain"] = NER_LABEL_TO_DOMAIN.get(label)
+
+             #如果primary和fallback都没有候选
+             if not candidates:
+@@ -648,6 +670,14 @@ class ABBRService:
+                 conf = coverage.get("confidence") or 0.0
+                 if (not coverage.get("coverage_ok")) or conf < 0.8:
+                     best = None
++
++            # batch4:取选中候选的 domain
++            best_domain = None
++            if best:
++                for candidate in candidates:
++                    if candidate.get("expansion") == best:
++                        best_domain = candidate.get("domain")
++                        break
+
+             #将缩写，候选表，候选覆盖情况返回
+             found.append({
+@@ -658,7 +688,7 @@ class ABBRService:
+                 "candidate_source":candidate_source,
+                 "best_expansion":best,
+                 "chosen_label":None,
+-                "chosen_domain":None
++                "chosen_domain":best_domain
+             })
+         return found
+
+```
+
+<!-- batch4-diff-service -->
+
+#### backend/data/abbr_candidates.py
+
+```diff
+diff --git a/backend/data/abbr_candidates.py b/backend/data/abbr_candidates.py
+index f4658f9..9ca5795 100644
+--- a/backend/data/abbr_candidates.py
++++ b/backend/data/abbr_candidates.py
+@@ -33,153 +33,153 @@
+
+ ABBR_CANDIDATES = {
+     "SOB": [
+-        "shortness of breath",
++        {"expansion": "shortness of breath", "domain": "Condition"},
+     ],
+     "HTN": [
+-        "hypertension",
++        {"expansion": "hypertension", "domain": "Condition"},
+     ],
+     "DM": [
+-        "diabetes mellitus",
+-        "dermatomyositis",
++        {"expansion": "diabetes mellitus", "domain": "Condition"},
++        {"expansion": "dermatomyositis", "domain": "Condition"},
+     ],
+     "CP": [
+-        "chest pain",
+-        "cerebral palsy",
+-        "chronic pancreatitis",
++        {"expansion": "chest pain", "domain": "Condition"},
++        {"expansion": "cerebral palsy", "domain": "Condition"},
++        {"expansion": "chronic pancreatitis", "domain": "Condition"},
+     ],
+     "HF": [
+-        "heart failure",
+-        "hepatic fibrosis",
++        {"expansion": "heart failure", "domain": "Condition"},
++        {"expansion": "hepatic fibrosis", "domain": "Condition"},
+     ],
+
+     # Cardiovascular
+     "CAD": [
+-        "coronary artery disease",
++        {"expansion": "coronary artery disease", "domain": "Condition"},
+     ],
+     "CHF": [
+-        "congestive heart failure",
++        {"expansion": "congestive heart failure", "domain": "Condition"},
+     ],
+     "MI": [
+-        "myocardial infarction",
+-        "mitral insufficiency",
++        {"expansion": "myocardial infarction", "domain": "Condition"},
++        {"expansion": "mitral insufficiency", "domain": "Condition"},
+     ],
+     "CABG": [
+-        "coronary artery bypass grafting",
++        {"expansion": "coronary artery bypass grafting", "domain": "Procedure"},
+     ],
+     "AF": [
+-        "atrial fibrillation",
+-        "atrial flutter",
++        {"expansion": "atrial fibrillation", "domain": "Condition"},
++        {"expansion": "atrial flutter", "domain": "Condition"},
+     ],
+     "AS": [
+-        "aortic stenosis",
+-        "ankylosing spondylitis",
++        {"expansion": "aortic stenosis", "domain": "Condition"},
++        {"expansion": "ankylosing spondylitis", "domain": "Condition"},
+     ],
+     "MS": [
+-        "multiple sclerosis",
+-        "mitral stenosis",
++        {"expansion": "multiple sclerosis", "domain": "Condition"},
++        {"expansion": "mitral stenosis", "domain": "Condition"},
+     ],
+
+     # Pulmonary
+     "COPD": [
+-        "chronic obstructive pulmonary disease",
++        {"expansion": "chronic obstructive pulmonary disease", "domain": "Condition"},
+     ],
+     "PE": [
+-        "pulmonary embolism",
+-        "physical examination",
++        {"expansion": "pulmonary embolism", "domain": "Condition"},
++        {"expansion": "physical examination", "domain": "Observation"},
+     ],
+     "PNA": [
+-        "pneumonia",
++        {"expansion": "pneumonia", "domain": "Condition"},
+     ],
+     "ARDS": [
+-        "acute respiratory distress syndrome",
++        {"expansion": "acute respiratory distress syndrome", "domain": "Condition"},
+     ],
+
+     # Renal / metabolic
+     "AKI": [
+-        "acute kidney injury",
++        {"expansion": "acute kidney injury", "domain": "Condition"},
+     ],
+     "CKD": [
+-        "chronic kidney disease",
++        {"expansion": "chronic kidney disease", "domain": "Condition"},
+     ],
+     "ESRD": [
+-        "end stage renal disease",
++        {"expansion": "end stage renal disease", "domain": "Condition"},
+     ],
+     "DKA": [
+-        "diabetic ketoacidosis",
++        {"expansion": "diabetic ketoacidosis", "domain": "Condition"},
+     ],
+
+     # Neurology
+     "CVA": [
+-        "cerebrovascular accident",
+-        "costovertebral angle",
++        {"expansion": "cerebrovascular accident", "domain": "Condition"},
++        {"expansion": "costovertebral angle", "domain": "Spec Anatomic Site"},
+     ],
+     "TIA": [
+-        "transient ischemic attack",
++        {"expansion": "transient ischemic attack", "domain": "Condition"},
+     ],
+     "SZ": [
+-        "seizure",
++        {"expansion": "seizure", "domain": "Condition"},
+     ],
+     "AMS": [
+-        "altered mental status",
++        {"expansion": "altered mental status", "domain": "Observation"},
+     ],
+     "LMN": [
+-        "lower motor neuron",
++        {"expansion": "lower motor neuron", "domain": "Spec Anatomic Site"},
+     ],
+
+     # GI / hepatology
+     "GI": [
+-        "gastrointestinal",
++        {"expansion": "gastrointestinal", "domain": "Spec Anatomic Site"},
+     ],
+     "GERD": [
+-        "gastroesophageal reflux disease",
++        {"expansion": "gastroesophageal reflux disease", "domain": "Condition"},
+     ],
+     "IBD": [
+-        "inflammatory bowel disease",
++        {"expansion": "inflammatory bowel disease", "domain": "Condition"},
+     ],
+     "IBS": [
+-        "irritable bowel syndrome",
++        {"expansion": "irritable bowel syndrome", "domain": "Condition"},
+     ],
+     "NASH": [
+-        "nonalcoholic steatohepatitis",
++        {"expansion": "nonalcoholic steatohepatitis", "domain": "Condition"},
+     ],
+
+     # Infectious disease
+     "UTI": [
+-        "urinary tract infection",
++        {"expansion": "urinary tract infection", "domain": "Condition"},
+     ],
+     "URI": [
+-        "upper respiratory infection",
++        {"expansion": "upper respiratory infection", "domain": "Condition"},
+     ],
+     "HIV": [
+-        "human immunodeficiency virus",
++        {"expansion": "human immunodeficiency virus", "domain": "Condition"},
+     ],
+     "TB": [
+-        "tuberculosis",
++        {"expansion": "tuberculosis", "domain": "Condition"},
+     ],
+     "COVID": [
+-        "coronavirus disease",
++        {"expansion": "coronavirus disease", "domain": "Condition"},
+     ],
+
+     # Labs / clinical context
+     "WBC": [
+-        "white blood cell count",
+-        "white blood cells",
++        {"expansion": "white blood cell count", "domain": "Measurement"},
++        {"expansion": "white blood cells", "domain": "Measurement"},
+     ],
+     "RBC": [
+-        "red blood cell count",
+-        "red blood cells",
++        {"expansion": "red blood cell count", "domain": "Measurement"},
++        {"expansion": "red blood cells", "domain": "Measurement"},
+     ],
+     "HGB": [
+-        "hemoglobin",
++        {"expansion": "hemoglobin", "domain": "Measurement"},
+     ],
+     "PLT": [
+-        "platelet count",
+-        "platelets",
++        {"expansion": "platelet count", "domain": "Measurement"},
++        {"expansion": "platelets", "domain": "Measurement"},
+     ],
+     "NA": [
+-        "sodium",
++        {"expansion": "sodium", "domain": "Measurement"},
+     ],
+     "K": [
+-        "potassium",
++        {"expansion": "potassium", "domain": "Measurement"},
+     ],
+-}
+\ No newline at end of file
++}
+```
+
+<!-- batch4-diff-dictionary -->
+
+### 回退与追溯
+
+- 回退本批提交即可恢复旧词典结构与无 domain boost 的排序。
+- Benchmark 生成结果、`medical-v11改进日记.md`、批次5指令和批次4指令均不纳入本批提交。

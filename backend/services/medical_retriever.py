@@ -22,7 +22,12 @@ class MedicalRetriever:
         # 已经创建好 embedding
         # 已经 load 好 collection
         self.std_service = StdService()
-    def _rerank_results(self,query:str,results:list[dict]):
+    def _rerank_results(
+            self,
+            query: str,
+            results: list[dict],
+            domain_boost: str | None = None
+            ):
         """对检索结果进行简单重排。
             规则：
             完全等于 query
@@ -46,6 +51,8 @@ class MedicalRetriever:
             #concept_name中包含query
             elif query_lower in concept_name:
                 bonus += 0.15
+            if domain_boost is not None and item.get("domain_id") == domain_boost:
+                bonus += 0.2
             #长术语惩罚措施
             word_count = len(concept_name)
             if word_count > 10:
@@ -70,12 +77,14 @@ class MedicalRetriever:
             top_k:int=5,
             #表示过滤条件
             domain_filter :str|None = None,
+            #表示优先提升的领域，不过滤其他领域
+            domain_boost: str | None = None,
             #表示过滤的最低分数
             score_threshold:float | None = None
             ):
         #根据用户数插入检索最相关的医学术语
         results = self.std_service.search_similar_terms(query=query,limit=top_k)
-        results = self._rerank_results(query,results)
+        results = self._rerank_results(query, results, domain_boost)
         documents = []
         for item in results:
             #如果有过滤条件但是条件不匹配就跳过本轮循环

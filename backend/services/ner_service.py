@@ -52,6 +52,19 @@ class NERService:
         #_merge_adjacent_entities就是一个清洗/后处理函数
         merged_entities = self._merge_adjacent_entities(text,entities)
         return merged_entities
+
+    def is_medical(self, text: str):
+        """对孤立短语返回 (是否有医学实体, 主 label, 分数)。
+        本批只用其 label 推断 domain,不做候选过滤。
+        """
+        if not text:
+            return False, None, 0.0
+        ents = self.extract_entities(text)
+        if not ents:
+            return False, None, 0.0
+        top = max(ents, key=lambda e: e["score"])
+        return True, top["label"], top["score"]
+
     def _merge_adjacent_entities(self,text:str,entities:list[dict]):
         """合并相邻医学实体。例如: chest + pain = chest pain"""
 

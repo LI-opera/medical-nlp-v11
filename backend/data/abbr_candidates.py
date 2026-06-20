@@ -33,153 +33,153 @@
 
 ABBR_CANDIDATES = {
     "SOB": [
-        "shortness of breath",
+        {"expansion": "shortness of breath", "domain": "Condition"},
     ],
     "HTN": [
-        "hypertension",
+        {"expansion": "hypertension", "domain": "Condition"},
     ],
     "DM": [
-        "diabetes mellitus",
-        "dermatomyositis",
+        {"expansion": "diabetes mellitus", "domain": "Condition"},
+        {"expansion": "dermatomyositis", "domain": "Condition"},
     ],
     "CP": [
-        "chest pain",
-        "cerebral palsy",
-        "chronic pancreatitis",
+        {"expansion": "chest pain", "domain": "Condition"},
+        {"expansion": "cerebral palsy", "domain": "Condition"},
+        {"expansion": "chronic pancreatitis", "domain": "Condition"},
     ],
     "HF": [
-        "heart failure",
-        "hepatic fibrosis",
+        {"expansion": "heart failure", "domain": "Condition"},
+        {"expansion": "hepatic fibrosis", "domain": "Condition"},
     ],
 
     # Cardiovascular
     "CAD": [
-        "coronary artery disease",
+        {"expansion": "coronary artery disease", "domain": "Condition"},
     ],
     "CHF": [
-        "congestive heart failure",
+        {"expansion": "congestive heart failure", "domain": "Condition"},
     ],
     "MI": [
-        "myocardial infarction",
-        "mitral insufficiency",
+        {"expansion": "myocardial infarction", "domain": "Condition"},
+        {"expansion": "mitral insufficiency", "domain": "Condition"},
     ],
     "CABG": [
-        "coronary artery bypass grafting",
+        {"expansion": "coronary artery bypass grafting", "domain": "Procedure"},
     ],
     "AF": [
-        "atrial fibrillation",
-        "atrial flutter",
+        {"expansion": "atrial fibrillation", "domain": "Condition"},
+        {"expansion": "atrial flutter", "domain": "Condition"},
     ],
     "AS": [
-        "aortic stenosis",
-        "ankylosing spondylitis",
+        {"expansion": "aortic stenosis", "domain": "Condition"},
+        {"expansion": "ankylosing spondylitis", "domain": "Condition"},
     ],
     "MS": [
-        "multiple sclerosis",
-        "mitral stenosis",
+        {"expansion": "multiple sclerosis", "domain": "Condition"},
+        {"expansion": "mitral stenosis", "domain": "Condition"},
     ],
 
     # Pulmonary
     "COPD": [
-        "chronic obstructive pulmonary disease",
+        {"expansion": "chronic obstructive pulmonary disease", "domain": "Condition"},
     ],
     "PE": [
-        "pulmonary embolism",
-        "physical examination",
+        {"expansion": "pulmonary embolism", "domain": "Condition"},
+        {"expansion": "physical examination", "domain": "Observation"},
     ],
     "PNA": [
-        "pneumonia",
+        {"expansion": "pneumonia", "domain": "Condition"},
     ],
     "ARDS": [
-        "acute respiratory distress syndrome",
+        {"expansion": "acute respiratory distress syndrome", "domain": "Condition"},
     ],
 
     # Renal / metabolic
     "AKI": [
-        "acute kidney injury",
+        {"expansion": "acute kidney injury", "domain": "Condition"},
     ],
     "CKD": [
-        "chronic kidney disease",
+        {"expansion": "chronic kidney disease", "domain": "Condition"},
     ],
     "ESRD": [
-        "end stage renal disease",
+        {"expansion": "end stage renal disease", "domain": "Condition"},
     ],
     "DKA": [
-        "diabetic ketoacidosis",
+        {"expansion": "diabetic ketoacidosis", "domain": "Condition"},
     ],
 
     # Neurology
     "CVA": [
-        "cerebrovascular accident",
-        "costovertebral angle",
+        {"expansion": "cerebrovascular accident", "domain": "Condition"},
+        {"expansion": "costovertebral angle", "domain": "Spec Anatomic Site"},
     ],
     "TIA": [
-        "transient ischemic attack",
+        {"expansion": "transient ischemic attack", "domain": "Condition"},
     ],
     "SZ": [
-        "seizure",
+        {"expansion": "seizure", "domain": "Condition"},
     ],
     "AMS": [
-        "altered mental status",
+        {"expansion": "altered mental status", "domain": "Observation"},
     ],
     "LMN": [
-        "lower motor neuron",
+        {"expansion": "lower motor neuron", "domain": "Spec Anatomic Site"},
     ],
 
     # GI / hepatology
     "GI": [
-        "gastrointestinal",
+        {"expansion": "gastrointestinal", "domain": "Spec Anatomic Site"},
     ],
     "GERD": [
-        "gastroesophageal reflux disease",
+        {"expansion": "gastroesophageal reflux disease", "domain": "Condition"},
     ],
     "IBD": [
-        "inflammatory bowel disease",
+        {"expansion": "inflammatory bowel disease", "domain": "Condition"},
     ],
     "IBS": [
-        "irritable bowel syndrome",
+        {"expansion": "irritable bowel syndrome", "domain": "Condition"},
     ],
     "NASH": [
-        "nonalcoholic steatohepatitis",
+        {"expansion": "nonalcoholic steatohepatitis", "domain": "Condition"},
     ],
 
     # Infectious disease
     "UTI": [
-        "urinary tract infection",
+        {"expansion": "urinary tract infection", "domain": "Condition"},
     ],
     "URI": [
-        "upper respiratory infection",
+        {"expansion": "upper respiratory infection", "domain": "Condition"},
     ],
     "HIV": [
-        "human immunodeficiency virus",
+        {"expansion": "human immunodeficiency virus", "domain": "Condition"},
     ],
     "TB": [
-        "tuberculosis",
+        {"expansion": "tuberculosis", "domain": "Condition"},
     ],
     "COVID": [
-        "coronavirus disease",
+        {"expansion": "coronavirus disease", "domain": "Condition"},
     ],
 
     # Labs / clinical context
     "WBC": [
-        "white blood cell count",
-        "white blood cells",
+        {"expansion": "white blood cell count", "domain": "Measurement"},
+        {"expansion": "white blood cells", "domain": "Measurement"},
     ],
     "RBC": [
-        "red blood cell count",
-        "red blood cells",
+        {"expansion": "red blood cell count", "domain": "Measurement"},
+        {"expansion": "red blood cells", "domain": "Measurement"},
     ],
     "HGB": [
-        "hemoglobin",
+        {"expansion": "hemoglobin", "domain": "Measurement"},
     ],
     "PLT": [
-        "platelet count",
-        "platelets",
+        {"expansion": "platelet count", "domain": "Measurement"},
+        {"expansion": "platelets", "domain": "Measurement"},
     ],
     "NA": [
-        "sodium",
+        {"expansion": "sodium", "domain": "Measurement"},
     ],
     "K": [
-        "potassium",
+        {"expansion": "potassium", "domain": "Measurement"},
     ],
 }
