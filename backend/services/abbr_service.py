@@ -350,80 +350,67 @@ class ABBRService:
         7. 如果不通过，Reflection 修正后重试
         """
         attempts = []
-        
+
         candidate_infos = self._get_abbreviation_candidates(text)
 
-        chosen = []
+        # —— 建 per-mapping 状态机条目 ——
+        states = []
         for info in candidate_infos:
             best = info.get("best_expansion")
             if not best:
                 continue
-            chosen.append({
+            # 候选池(确定性 reflect 的换候选空间);保证 best 排最前
+            pool = [c.get("expansion") for c in info.get("candidates", []) if c.get("expansion")]
+            if best in pool:
+                pool = [best] + [e for e in pool if e != best]
+            else:
+                pool = [best] + pool
+            states.append({
                 "abbreviation": info["abbreviation"],
                 "expansion": best,
                 "label": info.get("chosen_label"),
                 "source": info.get("candidate_source"),
+                "status": "PENDING",
+                "pool": pool,
+                "tried": {best},
+                "std_cache": None,
+                "changed": True,
             })
 
-        current_expanded_text = self._build_expanded_text_deterministic(text, chosen)
-        current_mappings = [
-            {
-                "abbreviation": item["abbreviation"],
-                "expansion": item["expansion"],
-                "label": item["label"],
-                "source": item["source"],
-            }
-            for item in chosen
-        ]
         current_abbreviation_candidates = candidate_infos
-
         mapping_support_results = []
-        # V9 Stable：不做 MappingSupportVerifier 过滤
-        # 保留 simple_llm_expansion 原始输出
-        # current_mappings 不变
-        # current_expanded_text 不重建
-        # current_mappings, mapping_support_results = self._filter_mappings_by_context_support(
-        #     original_text=text,
-        #     mappings=current_mappings
-        # )
+        standardization_result = None
 
-        # current_expanded_text = self._rebuild_expanded_text(
-        #     original_text=text,
-        #     mappings=current_mappings
-        # )
+        def _visible(state_list):
+            # 进入句子/检索的 mapping:未弃权的(LOCKED_OK + PENDING)
+            return [s for s in state_list if s["status"] != "LOCKED_ABSTAIN"]
 
-        for attempt_index in range(max_retries+1):
-            #只保留真正有expansion的mapping
-            #例如 {"abbreviation": "XYZ", "expansion": None} 不应该继续 SNOMED 检索
-            valid_mappings = current_mappings
+        current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
 
-            #如果一个有效扩写都没有，说明coverage全失败
-            #这种情况Reflection也没有候选可修，不要空转重试
-            if not current_mappings:
-                attempt_result = {
-                    "attempt": attempt_index + 1,
-                    "expanded_text": current_expanded_text,
-                    "abbreviation_candidates": current_abbreviation_candidates,
-                    "mappings": current_mappings,
-                    "standardization": None,
-                    "mapping_standardizations": [],
-                    "verification": {
-                        "sentence_validity": {
-                            "is_valid": True,
-                            "confidence": 1.0,
-                            "reason": "No valid abbreviation expansion was produced; the text was left unchanged.",
-                            "issues": []
-                        },
-                        "mapping_validations": [],
-                        "overall_valid": False
+        # —— 早停:召回阶段没选出任何扩写 ——
+        if not states:
+            attempt_result = {
+                "attempt": 1,
+                "expanded_text": current_expanded_text,
+                "abbreviation_candidates": current_abbreviation_candidates,
+                "mappings": [],
+                "standardization": None,
+                "mapping_standardizations": [],
+                "verification": {
+                    "sentence_validity": {
+                        "is_valid": True,
+                        "confidence": 1.0,
+                        "reason": "No valid abbreviation expansion was produced; the text was left unchanged.",
+                        "issues": []
                     },
-                    "stop_reason": "coverage_failed_no_valid_expansion",
-                    "mapping_support_results": mapping_support_results
-                }
-
-                attempts.append(attempt_result)
-
-                return {
+                    "mapping_validations": [],
+                    "overall_valid": False
+                },
+                "stop_reason": "coverage_failed_no_valid_expansion",
+                "mapping_support_results": mapping_support_results
+            }
+            attempts.append(attempt_result)
+            return {
                 "original_text": text,
                 "final_expanded_text": current_expanded_text,
                 "success": False,
@@ -432,114 +419,147 @@ class ABBRService:
                 "reason": "No valid abbreviation expansion found. Candidate coverage failed."
             }
 
+        # —— 重试循环:per-mapping 失败隔离 + 增量重算 ——
+        for attempt_index in range(max_retries + 1):
+            pending = [s for s in states if s["status"] == "PENDING"]
+            if not pending:
+                break
 
-            #对当前扩写文本做标准化
+            # 增量检索:只对本轮 expansion 变过的 PENDING 重检索
+            for s in pending:
+                if s["changed"]:
+                    docs = self.retriever.retrieve(
+                        query=s["expansion"],
+                        top_k=10,
+                        domain_filter=None,
+                        score_threshold=0.6
+                    )
+                    cand = []
+                    for doc in docs[:3]:
+                        md = doc["metadata"]
+                        cand.append({
+                            "concept_id": md["concept_id"],
+                            "concept_name": md["concept_name"],
+                            "domain_id": md["domain_id"],
+                            "concept_code": md["concept_code"],
+                            "score": md["score"],
+                            "rerank_score": md.get("rerank_score"),
+                        })
+                    s["std_cache"] = cand
+                    s["changed"] = False
+
+            # 整句标准化(沿用 V9:存档留痕,不喂 verify)
             standardization_result = self.standardizer.standardize(current_expanded_text)
 
-            mapping_standardizations = []
-
-            for mapping in valid_mappings:
-                expansion = mapping.get("expansion")
-
-                docs = self.retriever.retrieve(
-                    query=expansion,
-                    top_k=10,
-                    domain_filter=None,
-                    score_threshold=0.6
-                )
-
-                candidates = []
-
-                for doc in docs[:3]:
-                    metadata = doc["metadata"]
-
-                    candidates.append({
-                        "concept_id":metadata["concept_id"],
-                        "concept_name":metadata["concept_name"],
-                        "domain_id":metadata["domain_id"],
-                        "concept_code":metadata["concept_code"],
-                        "score":metadata["score"],
-                        "rerank_score":metadata.get("rerank_score")
-                    })
-                mapping_standardizations.append({
-                    "abbreviation":mapping["abbreviation"],
-                    "expansion":expansion,
-                    "candidates":candidates
-                })
-
-            #Verfier校验
-            #创建检验器
+            # 只对 PENDING 做 verify(LOCKED_OK 冻结不复验)
+            mapping_standardizations = [
+                {
+                    "abbreviation": s["abbreviation"],
+                    "expansion": s["expansion"],
+                    "candidates": s["std_cache"],
+                }
+                for s in pending
+            ]
             verification = self.verifier.verify_mappings(
                 original_text=text,
                 expanded_text=current_expanded_text,
-                mapping_standardizations=mapping_standardizations
+                mapping_standardizations=mapping_standardizations,
             )
+            validations = verification.get("mapping_validations", [])
 
-            #保存本次尝试结果
-            attempt_result = {
+            def _find_validation(abbr):
+                for v in validations:
+                    if v.get("abbreviation") == abbr:
+                        return v
+                return None
+
+            # 逐个 PENDING 判定:通过→LOCKED_OK;不过→换未试候选 or 弃权
+            for s in pending:
+                v = _find_validation(s["abbreviation"])
+                passed = bool(v and v.get("is_valid") is True)
+                if passed:
+                    s["status"] = "LOCKED_OK"
+                else:
+                    untried = [e for e in s["pool"] if e not in s["tried"]]
+                    if untried:
+                        # 选择型 reflect:取池里下一个未试候选(确定性,不调 LLM)
+                        s["expansion"] = untried[0]
+                        s["tried"].add(untried[0])
+                        s["changed"] = True
+                    else:
+                        s["status"] = "LOCKED_ABSTAIN"
+
+            # 用未弃权的 mapping 重新确定性拼句
+            current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
+
+            # 本轮留痕
+            attempts.append({
                 "attempt": attempt_index + 1,
                 "expanded_text": current_expanded_text,
-
-                # 缩写候选召回 + coverage + filtered_candidates
                 "abbreviation_candidates": current_abbreviation_candidates,
-
-                # LLM 最终选择出来的 abbreviation -> expansion
-                "mappings": current_mappings,
-
-                # 扩写后文本的 NER + SNOMED 标准化结果
+                "mappings": [
+                    {
+                        "abbreviation": s["abbreviation"],
+                        "expansion": s["expansion"],
+                        "label": s["label"],
+                        "source": s["source"],
+                        "status": s["status"],
+                    }
+                    for s in states
+                ],
                 "standardization": standardization_result,
-
-                # 每个 abbreviation -> expansion 的 SNOMED 检索结果
                 "mapping_standardizations": mapping_standardizations,
-
-                # 双层校验结果
                 "verification": verification,
-                "mapping_support_results": mapping_support_results
-            }
-            #把这次尝试放进历史记录
-            attempts.append(attempt_result)
+                "mapping_support_results": mapping_support_results,
+            })
 
-            #如果检验通过了直接返回
-            if verification.get("overall_valid") is True:
-                return {
-                    "original_text":text,
-                    "final_expanded_text":current_expanded_text,
-                    "success":True,
-                    "attempts":attempts,
-                    "final_result":attempt_result
+        # —— 循环结束:到达兜底次数仍 PENDING 的 → 安全弃权 ——
+        for s in states:
+            if s["status"] == "PENDING":
+                s["status"] = "LOCKED_ABSTAIN"
+
+        # —— 终态出口 ——
+        current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
+        locked_ok = [s for s in states if s["status"] == "LOCKED_OK"]
+        final_mappings = [
+            {
+                "abbreviation": s["abbreviation"],
+                "expansion": s["expansion"],
+                "label": s["label"],
+                "source": s["source"],
+            }
+            for s in locked_ok
+        ]
+        success = len(states) > 0 and all(s["status"] == "LOCKED_OK" for s in states)
+
+        final_result = {
+            "attempt": len(attempts),
+            "expanded_text": current_expanded_text,
+            "abbreviation_candidates": current_abbreviation_candidates,
+            "mappings": final_mappings,
+            "standardization": standardization_result,
+            "mapping_standardizations": [
+                {
+                    "abbreviation": s["abbreviation"],
+                    "expansion": s["expansion"],
+                    "candidates": s["std_cache"],
                 }
-            #如果次数用完就停止
-            if attempt_index >= max_retries:
-                return {
-                "original_text": text,
-                "final_expanded_text": current_expanded_text,
-                "success": False,
-                "attempts": attempts,
-                "final_result": attempt_result
-            }
+                for s in locked_ok
+            ],
+            "verification": attempts[-1]["verification"] if attempts else None,
+            "mapping_support_results": mapping_support_results,
+            "mapping_states": [
+                {"abbreviation": s["abbreviation"], "expansion": s["expansion"], "status": s["status"]}
+                for s in states
+            ],
+        }
 
-            #Reflection修正
-            #创建反思修正服务，作用：根据verifier给出的错误，尝试修正expanded_text
-            #给修正器提供参数，让其重新生成扩写文本
-            reflection_result = self.reflector.reflect(
-                original_text=text,
-                previous_expanded_text=current_expanded_text,
-                verification=verification,
-                abbreviation_candidates=current_abbreviation_candidates
-            )
-            #更新当前的扩写文本
-            current_expanded_text = reflection_result["revised_expanded_text"]
-
-            revised_mappings = reflection_result.get("revised_mappings",[])
-
-            if revised_mappings:
-                current_mappings = revised_mappings
         return {
             "original_text": text,
             "final_expanded_text": current_expanded_text,
-            "success": False,
+            "success": success,
             "attempts": attempts,
-            "final_result": attempts[-1] if attempts else None
+            "final_result": final_result,
         }
 
     #召回候选+覆盖度评估
