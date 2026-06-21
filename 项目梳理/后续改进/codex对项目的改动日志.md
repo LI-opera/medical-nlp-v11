@@ -962,3 +962,1585 @@ index e9a40a4..1aa9dfa 100644
 - Milvus 仍先按 raw score 截断 `top_k=10`；raw 排名在召回池之外、但 domain 完全匹配的概念仍无法进入 rerank，本批不处理。
 - 74 例 Benchmark 样本较小且 coverage 使用外部 LLM，单例波动仍可能造成约 1.35 个百分点噪声。
 - 评测后恢复本轮前已有修改的 `benchmark_results.json`，不把生成结果纳入提交。
+
+## 2026-06-21 · V11 批次 7：架构收敛与 V9 遗留清理
+
+### 改动目的
+
+- 将代码库收敛到唯一 V11 主流程：`expand_verify_with_retry → /expand/simple → benchmark`。
+- 删除不再接线的 V9 扩写、整句标准化、旧 Reflection、MappingSupportVerifier 与 LangGraph 流程。
+- 删除只引用旧符号的 9 个测试；后续测试与 graph 将按 V11 重建。
+- 删除主循环每轮执行但无人消费的整句 standardize，保留响应中的 `standardization: None` 结构。
+
+### 删除与保留
+
+- `abbr_service.py` 删除 6 个旧方法：`simple_llm_expansion`、`expand_abbreviations`、`expand_and_standardize`、`expand_standardize_and_verify`、`_rebuild_expanded_text`、`_filter_mappings_by_context_support`。
+- 删除 `ABBRReflectionService` 与 `MappingSupportVerifier` 的 import、实例及两个服务文件。
+- 删除 9 个旧测试文件。
+- 删除整个 `backend/graph/`，包括旧 LangGraph 代码、测试和工作流 PNG。
+- 明确保留 `_build_expanded_text_deterministic`、`expand_verify_with_retry`、`_get_abbreviation_candidates`、`_should_consider_abbreviation`。
+
+### 强校验结果
+
+- `abbr_service.py` 当前方法仅剩：`__init__`、`_build_expanded_text_deterministic`、`expand_verify_with_retry`、`_get_abbreviation_candidates`、`_should_consider_abbreviation`。
+- services/api/evaluation 编译：通过。
+- `ABBRService` 干净 import：通过，输出 `import OK`。
+- 批次1确定性单测：通过，输出 `OK`。
+- 已删符号全项目 grep：无悬空 Python 引用；仅命中 benchmark 文本中的无关单词 `radiograph`。
+- `git diff --check -- backend`：通过。
+
+### Verify 贡献量化
+
+- 在 74 例评测中临时打点，结果：FAIL `0`、SWAP `0`、ABSTAIN `0`。
+- 当前评测集里 verifier 没有否决任何 pending mapping，确定性换候选与弃权分支也未触发；可观测贡献为 0。
+- 三行临时 print 已全部删除，不进入提交。
+
+### Benchmark
+
+- 带打点 Benchmark：`71/74 = 0.9595`。
+- 删除打点后的正式 Benchmark：`71/74 = 0.9595`。
+- 分类：single `10/10`、ambiguous `10/10`、multi `10/10`、coverage_failed `5/5`、low_context `2/5`、negation `10/10`、casi_ambiguous `18/18`、fallback_should_expand `6/6`。
+- 失败仍只有既有 low-context 三例：`coverage_003`、`coverage_005`、`coverage_006`；架构清理没有改变判分。
+
+### 架构叙事变化
+
+- LangGraph 关键词暂时退出代码库，等待按 V11 状态机重建。
+- LLM 整句 Reflection 已退出；V11 的修正策略是固定候选池中的确定性换候选。
+- 主链路不再每轮执行整句 NER + SNOMED standardize，只保留逐 mapping SNOMED 检索供 verifier 与 API 编码出口使用。
+
+### 本轮 Git diff
+
+以下按 19 个变更文件完整保存。
+
+<!-- batch7-diff-start -->
+
+#### backend/graph/abbr_graph.py
+
+```diff
+diff --git a/backend/graph/abbr_graph.py b/backend/graph/abbr_graph.py
+deleted file mode 100644
+index 704a53b..0000000
+--- a/backend/graph/abbr_graph.py
++++ /dev/null
+@@ -1,51 +0,0 @@
+-from langgraph.graph import StateGraph, START, END
+-
+-from graph.abbr_graph_state import ABBRGraphState
+-from graph.abbr_graph_nodes import ABBRGraphNodes
+-
+-
+-def should_continue(state: ABBRGraphState) -> str:
+-    """
+-    决定 verify 后下一步走哪里。
+-    """
+-    if state.get("success") is True:
+-        return "end"
+-
+-    attempt = state.get("attempt", 1)
+-    max_retries = state.get("max_retries", 2)
+-
+-    if attempt > max_retries + 1:
+-        return "end"
+-
+-    return "reflect"
+-
+-
+-def build_abbr_graph():
+-    """
+-    构建医学缩写扩写 LangGraph 工作流。
+-    """
+-    nodes = ABBRGraphNodes()
+-
+-    workflow = StateGraph(ABBRGraphState)
+-
+-    workflow.add_node("expand", nodes.expand_node)
+-    workflow.add_node("standardize", nodes.standardize_node)
+-    workflow.add_node("verify", nodes.verify_node)
+-    workflow.add_node("reflect", nodes.reflect_node)
+-
+-    workflow.add_edge(START, "expand")
+-    workflow.add_edge("expand", "standardize")
+-    workflow.add_edge("standardize", "verify")
+-
+-    workflow.add_conditional_edges(
+-        "verify",
+-        should_continue,
+-        {
+-            "reflect": "reflect",
+-            "end": END
+-        }
+-    )
+-
+-    workflow.add_edge("reflect", "standardize")
+-
+-    return workflow.compile()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-1 -->
+
+#### backend/graph/abbr_graph_nodes.py
+
+```diff
+diff --git a/backend/graph/abbr_graph_nodes.py b/backend/graph/abbr_graph_nodes.py
+deleted file mode 100644
+index 2d7e9d8..0000000
+--- a/backend/graph/abbr_graph_nodes.py
++++ /dev/null
+@@ -1,173 +0,0 @@
+-from services.abbr_service import ABBRService
+-from graph.abbr_graph_state import ABBRGraphState
+-
+-class ABBRGraphNodes:
+-    """
+-    langgraph节点集合
+-    复用现有ABBRService的稳定V9能力
+-    """
+-    def __init__(self):
+-        self.service = ABBRService()
+-
+-    def expand_node(self,state:ABBRGraphState)-> ABBRGraphState:
+-        """
+-        节点1：缩写扩写节点
+-        对应原来的
+-        current_expansion_result = self.simple_llm_expansion(text)
+-        """
+-        original_text = state["original_text"]
+-
+-        expansion_result = self.service.simple_llm_expansion(original_text)
+-
+-        return{
+-            **state,
+-            "current_expanded_text":expansion_result["expanded_text"],
+-            "current_mappings":expansion_result.get("mappings",[]),
+-            "abbreviation_candidates":expansion_result.get("abbreviation_candidates",[]),
+-        }
+-
+-    def standardize_node(self,state:ABBRGraphState)->ABBRGraphState:
+-        """
+-        节点2“标准化节点。
+-        对应原来的:
+-        1.standardizer.standardize(current_expanded_text)
+-        2.对每个mapping的expansion做SNOMED Retrieval
+-        """
+-        current_expanded_text = state["current_expanded_text"]
+-        current_mappings = state.get("current_mappings",[])
+-
+-        standardization_result = self.service.standardizer.standardize(
+-            current_expanded_text
+-        )
+-
+-        mapping_standardizations = []
+-
+-        for mapping in current_mappings:
+-            expansion = mapping.get("expansion")
+-
+-            if not expansion:
+-                continue
+-
+-            docs = self.service.retriever.retrieve(
+-                query=expansion,
+-                top_k=10,
+-                domain_filter=None,
+-                score_threshold=0.6
+-            )
+-
+-            candidates = []
+-
+-            for doc in docs[:3]:
+-                metadata = doc["metadata"]
+-
+-                candidates.append({
+-                    "concept_id": metadata["concept_id"],
+-                    "concept_name": metadata["concept_name"],
+-                    "domain_id": metadata["domain_id"],
+-                    "concept_code": metadata["concept_code"],
+-                    "score": metadata["score"],
+-                    "rerank_score": metadata.get("rerank_score")
+-                })
+-            mapping_standardizations.append({
+-                "abbreviation": mapping["abbreviation"],
+-                "expansion": expansion,
+-                "candidates": candidates
+-            })
+-        return {
+-            **state,
+-            "standardization":standardization_result,
+-            "mapping_standardizations":mapping_standardizations,
+-        }
+-
+-    def verify_node(self, state: ABBRGraphState) -> ABBRGraphState:
+-        """
+-        节点3：校验节点。
+-
+-        对应原来的：
+-        self.verifier.verify_mappings(...)
+-        """
+-        original_text = state["original_text"]
+-        current_expanded_text = state["current_expanded_text"]
+-        mapping_standardizations = state.get("mapping_standardizations", [])
+-
+-        verification = self.service.verifier.verify_mappings(
+-            original_text=original_text,
+-            expanded_text=current_expanded_text,
+-            mapping_standardizations=mapping_standardizations
+-        )
+-
+-        attempt_result = {
+-            "attempt": state.get("attempt", 1),
+-            "expanded_text": current_expanded_text,
+-            "abbreviation_candidates": state.get("abbreviation_candidates", []),
+-            "mappings": state.get("current_mappings", []),
+-            "standardization": state.get("standardization"),
+-            "mapping_standardizations": mapping_standardizations,
+-            "verification": verification
+-        }
+-
+-        attempts = state.get("attempts", [])
+-        attempts.append(attempt_result)
+-
+-        success = verification.get("overall_valid") is True
+-
+-        return {
+-            **state,
+-            "verification": verification,
+-            "success": success,
+-            "attempts": attempts,
+-        }
+-
+-    def reflect_node(self, state: ABBRGraphState) -> ABBRGraphState:
+-        """
+-        节点4：反思修正节点
+-
+-        当 verify_node 不通过时，根据 verification 结果和候选重新生成扩写。
+-        对应 ABBRReflectionService。
+-        """
+-        if state.get("success", False):
+-            # 如果已经成功，不需要反思
+-            return state
+-
+-        original_text = state["original_text"]
+-        previous_expanded_text = state.get("current_expanded_text", "")
+-        verification = state.get("verification", {})
+-        abbreviation_candidates = state.get("abbreviation_candidates", [])
+-
+-        # 调用反思服务
+-        reflection_result = self.service.reflector.reflect(
+-            original_text=original_text,
+-            previous_expanded_text=previous_expanded_text,
+-            verification=verification,
+-            abbreviation_candidates=abbreviation_candidates
+-        )
+-
+-        # 更新 state
+-        current_expanded_text = reflection_result.get("revised_expanded_text", previous_expanded_text)
+-        current_mappings = reflection_result.get("revised_mappings", [])
+-
+-        attempt_result = {
+-            "attempt": state.get("attempt", 1),
+-            "expanded_text": current_expanded_text,
+-            "abbreviation_candidates": abbreviation_candidates,
+-            "mappings": current_mappings,
+-            "reflection_result": reflection_result,
+-            "verification": verification
+-        }
+-
+-        attempts = state.get("attempts", [])
+-        attempts.append(attempt_result)
+-
+-        # 判断成功与否
+-        success = bool(current_mappings) and verification.get("overall_valid", False)
+-
+-        next_attempt = state.get("attempt", 1) + 1
+-        return {
+-            **state,
+-            "current_expanded_text": current_expanded_text,
+-            "current_mappings": current_mappings,
+-            "reflection_result": reflection_result,
+-            "success": success,
+-            "attempt": next_attempt,
+-            "attempts": attempts
+-        }
+\ No newline at end of file
+```
+
+<!-- batch7-diff-2 -->
+
+#### backend/graph/abbr_graph_state.py
+
+```diff
+diff --git a/backend/graph/abbr_graph_state.py b/backend/graph/abbr_graph_state.py
+deleted file mode 100644
+index 35dfd5a..0000000
+--- a/backend/graph/abbr_graph_state.py
++++ /dev/null
+@@ -1,36 +0,0 @@
+-from typing import TypedDict
+-
+-class ABBRGraphState(TypedDict,total=False):
+-    """
+-    医学缩写扩写langgraph状态对象
+-    langgraph的核心思想是：所有节点共享同一个state,
+-    每个节点从state读取数据，再把自己的结果写回state
+-    """
+-    #原始输入
+-    original_text:str
+-
+-    #当前扩写结果
+-    current_expanded_text:str
+-    current_mappings:list[dict]
+-
+-    #缩写候选
+-    abbreviation_candidates:list[dict]
+-
+-    #标准化结果
+-    standardization:dict
+-    mapping_standardizations:list[dict]
+-
+-    #校验结果
+-    verification:dict
+-
+-    #Reflection结果
+-    reflection_result:dict
+-
+-    #控制流程
+-    attempt:int
+-    max_retries:int
+-    success:bool
+-    stop_reason:str
+-
+-    #全链路追踪
+-    attempts:list[dict]
+\ No newline at end of file
+```
+
+<!-- batch7-diff-3 -->
+
+#### backend/graph/abbr_workflow.png
+
+```diff
+diff --git a/backend/graph/abbr_workflow.png b/backend/graph/abbr_workflow.png
+deleted file mode 100644
+index edddd55..0000000
+Binary files a/backend/graph/abbr_workflow.png and /dev/null differ
+```
+
+<!-- batch7-diff-4 -->
+
+#### backend/graph/export_graph.py
+
+```diff
+diff --git a/backend/graph/export_graph.py b/backend/graph/export_graph.py
+deleted file mode 100644
+index afc9960..0000000
+--- a/backend/graph/export_graph.py
++++ /dev/null
+@@ -1,19 +0,0 @@
+-import sys
+-from pathlib import Path
+-
+-BACKEND_DIR = Path(__file__).resolve().parents[1]
+-sys.path.append(str(BACKEND_DIR))
+-
+-from graph.abbr_graph import build_abbr_graph
+-
+-
+-graph = build_abbr_graph()
+-
+-png_data = graph.get_graph().draw_mermaid_png()
+-
+-output_path = Path(__file__).resolve().parent / "abbr_workflow.png"
+-
+-with open(output_path, "wb") as f:
+-    f.write(png_data)
+-
+-print(f"Graph exported to: {output_path}")
+\ No newline at end of file
+```
+
+<!-- batch7-diff-5 -->
+
+#### backend/graph/test_abbr_graph.py
+
+```diff
+diff --git a/backend/graph/test_abbr_graph.py b/backend/graph/test_abbr_graph.py
+deleted file mode 100644
+index 7f26ca2..0000000
+--- a/backend/graph/test_abbr_graph.py
++++ /dev/null
+@@ -1,42 +0,0 @@
+-import sys
+-from pathlib import Path
+-
+-BACKEND_DIR = Path(__file__).resolve().parents[1]
+-sys.path.append(str(BACKEND_DIR))
+-
+-from graph.abbr_graph import build_abbr_graph
+-
+-
+-def main():
+-    graph = build_abbr_graph()
+-
+-    initial_state = {
+-        "original_text": "The patient denies CP but reports SOB.",
+-        "attempt": 1,
+-        "max_retries": 2,
+-        "success": False,
+-        "attempts": []
+-    }
+-
+-    result = graph.invoke(initial_state)
+-
+-    print("=" * 80)
+-    print("Original Text:")
+-    print(result.get("original_text"))
+-
+-    print("\nFinal Expanded Text:")
+-    print(result.get("current_expanded_text"))
+-
+-    print("\nMappings:")
+-    print(result.get("current_mappings"))
+-
+-    print("\nSuccess:")
+-    print(result.get("success"))
+-
+-    print("\nAttempts:")
+-    for attempt in result.get("attempts", []):
+-        print(attempt)
+-
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-6 -->
+
+#### backend/graph/test_graph_cases.py
+
+```diff
+diff --git a/backend/graph/test_graph_cases.py b/backend/graph/test_graph_cases.py
+deleted file mode 100644
+index 0ab58b6..0000000
+--- a/backend/graph/test_graph_cases.py
++++ /dev/null
+@@ -1,53 +0,0 @@
+-import sys
+-from pathlib import Path
+-
+-BACKEND_DIR = Path(__file__).resolve().parents[1]
+-sys.path.append(str(BACKEND_DIR))
+-
+-from graph.abbr_graph import build_abbr_graph
+-
+-
+-GRAPH_TEST_CASES = [
+-    "The patient has HTN.",
+-    "The patient has DM.",
+-    "The patient developed AKI after dehydration.",
+-    "The patient has COPD and SOB.",
+-    "The patient denies CP but reports SOB.",
+-    "The patient has MS with optic neuritis and limb weakness.",
+-]
+-
+-
+-def main():
+-    graph = build_abbr_graph()
+-
+-    for index, text in enumerate(GRAPH_TEST_CASES, start=1):
+-        initial_state = {
+-            "original_text": text,
+-            "attempt": 1,
+-            "max_retries": 2,
+-            "success": False,
+-            "attempts": []
+-        }
+-
+-        result = graph.invoke(initial_state)
+-
+-        print("=" * 80)
+-        print(f"Case {index}")
+-        print("Input:")
+-        print(text)
+-
+-        print("\nExpanded:")
+-        print(result.get("current_expanded_text"))
+-
+-        print("\nMappings:")
+-        print(result.get("current_mappings"))
+-
+-        print("\nSuccess:")
+-        print(result.get("success"))
+-
+-        print("\nAttempts Count:")
+-        print(len(result.get("attempts", [])))
+-
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-7 -->
+
+#### backend/services/abbr_reflection_service.py
+
+```diff
+diff --git a/backend/services/abbr_reflection_service.py b/backend/services/abbr_reflection_service.py
+deleted file mode 100644
+index d0580a6..0000000
+--- a/backend/services/abbr_reflection_service.py
++++ /dev/null
+@@ -1,86 +0,0 @@
+-import json
+-import os
+-from dotenv import load_dotenv
+-from langchain_deepseek import ChatDeepSeek
+-
+-#绝对路径，引入环境变量
+-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+-BACKEND_DIR = os.path.dirname(CURRENT_DIR)
+-ENV_PATH = os.path.join(BACKEND_DIR, ".env")
+-
+-load_dotenv(ENV_PATH, override=True)
+-
+-class ABBRReflectionService:
+-    """
+-    医学缩写扩展反思修正服务。
+-    作用：当Verifier认为扩写不可靠时，根据原始文本，上一次扩写结果，校验问题，让LLM重新生成
+-    """
+-    def __init__(self):
+-        #获得llm api
+-        api_key = os.getenv("DEEPSEEK_API_KEY")
+-        if not api_key:
+-            raise ValueError("DEEPSEEK_API_KEY is not set.")
+-        self.llm = ChatDeepSeek(
+-            model="deepseek-chat",
+-            api_key=api_key.strip(),
+-            temperature=0,
+-            max_retries=2
+-        )
+-
+-    def reflect(self,original_text:str,previous_expanded_text:str,verification:dict,abbreviation_candidates:list[dict]):
+-        #根据verifier的错误报告重新扩写
+-        prompt = f"""
+-        You are a medical abbreviation reflection assistant.
+-
+-        Task:
+-        Revise the expanded clinical text based on the verification feedback.
+-
+-        Original clinical text:
+-        {original_text}
+-
+-        Previous expanded clinical text:
+-        {previous_expanded_text}
+-
+-        Verification feedback:
+-        {json.dumps(verification, ensure_ascii=False, indent=2)}
+-
+-        Available abbreviation candidates:
+-        {json.dumps(abbreviation_candidates, ensure_ascii=False, indent=2)}
+-
+-        Rules:
+-        1. Only expand medical abbreviations.
+-        2. Do not add new symptoms, diagnoses, treatments, or assumptions.
+-        3. Preserve negation, uncertainty, severity, timing, and clinical meaning.
+-        4. If an abbreviation is ambiguous, choose the meaning best supported by the original context.
+-        5. Return only valid JSON.
+-        6. Do not include markdown.
+-        7. When revising mappings, choose expansions from the available abbreviation candidates when possible.
+-        8. Do not invent a new expansion if a candidate exists for that abbreviation.
+-
+-        Return JSON in exactly this format:
+-        {{
+-        "revised_expanded_text": "revised clinical text here",
+-        "revised_mappings": [
+-           {{
+-            "abbreviation": "SOB",
+-            "expansion": "shortness of breath"
+-            }}
+-        ],
+-        "reason": "brief explanation of what was corrected"
+-        }}
+-        """
+-
+-        response = self.llm.invoke(prompt)
+-        content = response.content.strip()
+-        #取出content json文本中的杂质
+-        content = content.replace("```json", "").replace("```", "").strip()
+-
+-        try:
+-            return json.loads(content)
+-        except json.JSONDecodeError:
+-            return{
+-                "revised_expanded_text": previous_expanded_text,
+-                "revised_mappings": [],
+-                "reason": "Reflection did not return valid JSON.",
+-                "raw_output": content
+-            }
+\ No newline at end of file
+```
+
+<!-- batch7-diff-8 -->
+
+#### backend/services/abbr_service.py
+
+```diff
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index b9e5928..b93aaa0 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -2,13 +2,10 @@ from langchain_deepseek import ChatDeepSeek
+ from services.medical_standardizer import MedicalStandardizer
+ from services.abbr_verifier import ABBVerifier
+ from services.medical_retriever import MedicalRetriever
+-from services.abbr_reflection_service import ABBRReflectionService
+ from services.abbr_candidate_retriever import ABBRCandidateRetriever
+ from services.abbr_candidate_coverage_evaluator import ABBRCandidateCoverageEvaluator
+ from services.abbr_candidate_fallback_retriever import ABBRCandidateFallbackRetriever
+-from services.mapping_support_verifier import MappingSupportVerifier
+ from data.abbr_candidates import ABBR_CANDIDATES
+-import json
+ import re
+ #加载环境变量
+ import os
+@@ -69,193 +66,9 @@ class ABBRService:
+         self.ner_service = self.standardizer.ner_service
+         self.retriever = MedicalRetriever()
+         self.verifier = ABBVerifier()
+-        self.reflector = ABBRReflectionService()
+         self.candidate_retriever = ABBRCandidateRetriever()
+         self.fallback_retriever = ABBRCandidateFallbackRetriever()
+         self.coverage_evaluator = ABBRCandidateCoverageEvaluator()
+-        # V10 Experimental Module，当前 V9 Stable 主链路禁用
+-        self.mapping_support_verifier = MappingSupportVerifier()
+-    #使用llm将text文本中的简写词给重写
+-    #返回：1.expanded_text:扩展后的完整文本。2.mappings:每个缩写对应的扩展结果。
+-    def simple_llm_expansion(self,text:str):
+-        #使用llm扩展医学缩写
+-        #1.先从候选库召回abbreviation candidates
+-        #2.再让llm基于上下文从后选中选择
+-        abbreviation_candidates = self._get_abbreviation_candidates(text)
+-
+-        prompt = f"""
+-        You are a medical abbreviation expansion assistant.
+-
+-        Task:
+-        Expand medical abbreviations in the clinical text.
+-
+-        Important:
+-        You must choose expansions from the provided abbreviation candidates when candidates are available.
+-
+-        Clinical text:
+-        {text}
+-
+-        Abbreviation candidates after coverage filtering::
+-        {json.dumps(abbreviation_candidates, ensure_ascii=False, indent=2)}
+-
+-        Rules:
+-        1. Only expand medical abbreviations.
+-        2. Keep the original sentence meaning unchanged.
+-        3. Do not add diagnosis, explanation, or extra information.
+-        4. Use filtered_candidates as the primary candidate set.
+-        5. If filtered_candidates is empty because coverage.coverage_ok is false, do not force an expansion.
+-        6. If filtered_candidates is empty but coverage.coverage_ok is true, use original candidates with low confidence.
+-        7. Preserve negation, uncertainty, severity, timing, and clinical meaning.
+-        8. Return only valid JSON.
+-        9. Do not use markdown.
+-
+-        Return JSON format:
+-        {{
+-        "expanded_text": "expanded clinical text here",
+-        "mappings": [
+-            {{
+-            "abbreviation": "SOB",
+-            "expansion": "shortness of breath",
+-            "source": "candidate"
+-            }},
+-            {{
+-            "abbreviation": "XYZ",
+-            "expansion": null,
+-            "source": "coverage_failed"
+-            }}
+-        ]
+-        }}
+-        """
+-        response = self.llm.invoke(prompt)
+-        content = response.content.strip()
+-        content = content.replace("```json", "").replace("```", "").strip()
+-
+-        try:
+-            parsed = json.loads(content)
+-        except json.JSONDecodeError:
+-            return {
+-                "original_text":text,
+-                "expanded_text":content,
+-                "mappings":[],
+-                "abbreviation_candidates": abbreviation_candidates,
+-                "parse_error":True
+-            }
+-        #返回替换前和替换后的句子
+-        return {
+-            "original_text": text,
+-            "expanded_text": parsed.get("expanded_text", text),
+-            "mappings": parsed.get("mappings", []),
+-            "abbreviation_candidates": abbreviation_candidates,
+-            "parse_error": False
+-        }
+-
+-    def expand_abbreviations(self,text:str):
+-        #创建一个text副本，用来之后展示哪些源文本被替换做参照
+-        expanded_text = text
+-        #创建一个列表，记录替换历史
+-        replacements = []
+-
+-        #将字典的键值对取出，判断文本中是否有需要替换的键
+-        for abbr,full_term in self.abbr_dict.items():
+-            #如果缩写在当前文本中
+-            if abbr in expanded_text:
+-                #则将文本中的缩写替换为full_term。然后再赋值回expanded_text
+-                expanded_text = expanded_text.replace(abbr,full_term)
+-                #如果发生替换，就记录下来
+-                replacements.append({
+-                    "abbreviation":abbr,
+-                    "full_term":full_term
+-                })
+-        #返回就文本新文本的对照，以及替换记录
+-        return{
+-            "original_text":text,
+-            "expanded_text":expanded_text,
+-            "replacements":replacements
+-        }
+-
+-    def expand_and_standardize(self,text:str):
+-        """llm缩写扩展 + 医学术语标准化
+-            同时返回：
+-            1. 整句扩展后的标准化结果
+-            2. 每个缩写 expansion 对应的 SNOMED 候选
+-        """
+-        #使用simple_llm_expansion改写text
+-        expansion_result = self.simple_llm_expansion(text)
+-        #提取重写的text和重写时改动的词汇
+-        expanded_text = expansion_result["expanded_text"]
+-        mappings = expansion_result.get("mappings",[])
+-
+-        #提取新生成的text其中的医学实体
+-        standardization_result = self.standardizer.standardize(expanded_text)
+-
+-
+-        mapping_standardizations = []
+-        for mapping in mappings:
+-            expansion = mapping.get("expansion")
+-
+-            docs = self.retriever.retrieve(
+-                query=expansion,
+-                top_k=10,
+-                domain_filter=None,
+-                score_threshold=0.6
+-            )
+-            candidates = []
+-            for doc in docs[:3]:
+-                metadata = doc["metadata"]
+-
+-                candidates.append({
+-                    "concept_id":metadata["concept_id"],
+-                    "concept_name":metadata["concept_name"],
+-                    "domain_id":metadata["domain_id"],
+-                    "concept_code":metadata["concept_code"],
+-                    "score":metadata["score"],
+-                    "rerank_score":metadata.get("rerank_score")
+-                })
+-            mapping_standardizations.append({
+-                "abbreviation":mapping["abbreviation"],
+-                "expansion":expansion,
+-                "candidates":candidates
+-            })
+-
+-        return {
+-            "original_text":text,
+-            "expanded_text":expanded_text,
+-            "mappings":mappings,
+-            "standardization":standardization_result,
+-            "mapping_standardizations":mapping_standardizations
+-        }
+-
+-    def expand_standardize_and_verify(self,text:str):
+-        """
+-        LLM缩写扩写 + NER/RAG标准化+逐项扩写词校验
+-        """
+-        pipeline_result = self.expand_and_standardize(text)
+-
+-
+-        verification = self.verifier.verify_mappings(
+-            original_text=pipeline_result["original_text"],
+-            expanded_text=pipeline_result["expanded_text"],
+-            mapping_standardizations=pipeline_result["mapping_standardizations"]
+-        )
+-        return{
+-            **pipeline_result,
+-            "verification":verification
+-        }
+-
+-    def _rebuild_expanded_text(self,original_text:str,mappings:list[dict]) -> str:
+-        #根据通过 support verification的mappings,重新构建expanded_text
+-        #目的：如果某个mapping被MappingSupportVerifier拒绝，那么对应缩写应该保留原样，而不是继续出现在expanded_text里
+-        rebuilt_text = original_text
+-        for mapping in mappings:
+-            abbr = mapping.get("abbreviation")
+-            expansion = mapping.get("expansion")
+-
+-            if not abbr or not expansion:
+-                continue
+-            rebuilt_text = rebuilt_text.replace(abbr,expansion)
+-
+-        return rebuilt_text
+-
+     def _build_expanded_text_deterministic(self, text: str, chosen: list[dict]) -> str:
+         """确定性扩写:对每个 {abbreviation -> expansion} 按 token 边界替换。
+         - \b...\b 保证不误伤子串(CP 不命中 CPR)
+@@ -281,76 +94,6 @@ class ABBRService:
+             result = result[:start] + expansion + result[end:]
+         return result
+
+-    def _filter_mappings_by_context_support(
+-        self, original_text: str, mappings: list[dict]
+-    ) -> tuple[list[dict], list[dict]]:
+-        """
+-        使用 MappingSupportVerifier 过滤上下文不支持的 abbreviation -> expansion。
+-
+-        V10.1 策略：
+-        1. 单候选缩写：直接通过
+-        2. 多候选缩写：调用 MappingSupportVerifier
+-        3. 缺失 abbreviation / expansion：拒绝
+-        """
+-        supported_mappings = []
+-        support_results = []
+-
+-        for mapping in mappings:
+-            abbr = mapping.get("abbreviation")
+-            expansion = mapping.get("expansion")
+-
+-            if not abbr or not expansion:
+-                support_results.append({
+-                    "abbreviation": abbr,
+-                    "expansion": expansion,
+-                    "supported": False,
+-                    "confidence": 0.0,
+-                    "reason": "Missing abbreviation or expansion.",
+-                    "gate": "missing_field"
+-                })
+-                continue
+-
+-            # 先查看候选数量
+-            candidates = self.candidate_retriever.retrieve(abbr)
+-            candidate_count = len(candidates)
+-
+-            # V10.1：单候选缩写直接通过
+-            if candidate_count <= 1:
+-                supported_mappings.append(mapping)
+-                support_results.append({
+-                    "abbreviation": abbr,
+-                    "expansion": expansion,
+-                    "supported": True,
+-                    "confidence": 1.0,
+-                    "reason": "Single-candidate abbreviation; mapping support verification skipped.",
+-                    "gate": "single_candidate_pass"
+-                })
+-                continue
+-
+-            # 多候选缩写才调用 MappingSupportVerifier
+-            support_result = self.mapping_support_verifier.verify(
+-                text=original_text,
+-                abbreviation=abbr,
+-                expansion=expansion
+-            )
+-
+-            support_item = {
+-                "abbreviation": abbr,
+-                "expansion": expansion,
+-                "supported": support_result.supported,
+-                "confidence": support_result.confidence,
+-                "reason": support_result.reason,
+-                "gate": "mapping_support_verifier"
+-            }
+-
+-            support_results.append(support_item)
+-
+-            if support_result.supported:
+-                supported_mappings.append(mapping)
+-
+-        return supported_mappings, support_results
+-
+-    #max_retries=2意思是最多允许 Reflection 修正 2 次。加第一次 正常尝试。所以总共最多三次
+     def expand_verify_with_retry(self,text:str,max_retries:int=2):
+         """
+         缩写扩展 + 标准化 + 校验 + Reflection 重试。
+@@ -465,9 +208,6 @@ class ABBRService:
+                     s["std_cache"] = cand
+                     s["changed"] = False
+
+-            # 整句标准化(沿用 V9:存档留痕,不喂 verify)
+-            standardization_result = self.standardizer.standardize(current_expanded_text)
+-
+             # 只对 PENDING 做 verify(LOCKED_OK 冻结不复验)
+             mapping_standardizations = [
+                 {
+@@ -728,17 +468,6 @@ class ABBRService:
+
+
+
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+ """
+ original_text
+     原始输入
+```
+
+<!-- batch7-diff-9 -->
+
+#### backend/services/mapping_support_verifier.py
+
+```diff
+diff --git a/backend/services/mapping_support_verifier.py b/backend/services/mapping_support_verifier.py
+deleted file mode 100644
+index 310b1be..0000000
+--- a/backend/services/mapping_support_verifier.py
++++ /dev/null
+@@ -1,119 +0,0 @@
+-import json
+-import os
+-from dotenv import load_dotenv
+-from langchain_deepseek import ChatDeepSeek
+-from pydantic import BaseModel, Field
+-
+-
+-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+-BACKEND_DIR = os.path.dirname(CURRENT_DIR)
+-ENV_PATH = os.path.join(BACKEND_DIR, ".env")
+-
+-load_dotenv(ENV_PATH, override=True)
+-
+-
+-MAPPING_SUPPORT_SYSTEM_PROMPT = """
+-You are a clinical abbreviation mapping support verifier.
+-
+-Your task is NOT to decide whether an expansion is medically valid in general.
+-
+-Your task is to decide whether the given clinical text provides enough contextual evidence
+-to support the specific abbreviation-to-expansion mapping.
+-
+-You must be conservative.
+-
+-If the abbreviation has a possible medical expansion, but the surrounding text does not provide
+-enough clinical context to support that expansion, mark supported as false.
+-
+-Return only valid JSON.
+-Do not use markdown.
+-"""
+-
+-
+-class MappingSupportResult(BaseModel):
+-    """
+-    当前文本是否支持 abbreviation -> expansion 这个映射。
+-    """
+-    supported: bool = Field(description="当前文本是否支持该缩写扩写")
+-    confidence: float = Field(description="支持判断的置信度，0 到 1")
+-    reason: str = Field(description="判断原因")
+-
+-
+-class MappingSupportVerifier:
+-    """
+-    Mapping Support Verifier
+-
+-    作用：
+-    判断当前 clinical text 是否真的支持某个 abbreviation -> expansion。
+-
+-    注意：
+-    它不是判断 expansion 是否医学上存在。
+-    它判断的是：
+-    当前这句话里有没有足够上下文支持这个 expansion。
+-    """
+-
+-    def __init__(self):
+-        api_key = os.getenv("DEEPSEEK_API_KEY")
+-        if not api_key:
+-            raise ValueError("DEEPSEEK_API_KEY is not set.")
+-
+-        self.llm = ChatDeepSeek(
+-            model="deepseek-chat",
+-            api_key=api_key.strip(),
+-            temperature=0,
+-            max_retries=2
+-        )
+-
+-    def verify(
+-        self,
+-        text: str,
+-        abbreviation: str,
+-        expansion: str
+-    ) -> MappingSupportResult:
+-        prompt = f"""
+-{MAPPING_SUPPORT_SYSTEM_PROMPT}
+-
+-Clinical text:
+-{text}
+-
+-Abbreviation:
+-{abbreviation}
+-
+-Candidate expansion:
+-{expansion}
+-
+-Question:
+-Does the clinical text provide enough contextual evidence to support this abbreviation-to-expansion mapping?
+-
+-Important distinction:
+-- If the expansion is medically valid in general but not supported by the current text, return supported=false.
+-- If the text is too short or too generic, return supported=false.
+-- If there are clear context clues supporting the expansion, return supported=true.
+-- Do not rely only on the abbreviation itself.
+-- Be conservative.
+-
+-Return JSON in exactly this format:
+-{{
+-  "supported": false,
+-  "confidence": 0.0,
+-  "reason": "brief explanation"
+-}}
+-"""
+-
+-        response = self.llm.invoke(prompt)
+-        content = response.content.strip()
+-        content = content.replace("```json", "").replace("```", "").strip()
+-
+-        try:
+-            parsed = json.loads(content)
+-            return MappingSupportResult(
+-                supported=parsed.get("supported", False),
+-                confidence=float(parsed.get("confidence", 0.0)),
+-                reason=parsed.get("reason", "")
+-            )
+-        except Exception:
+-            return MappingSupportResult(
+-                supported=False,
+-                confidence=0.0,
+-                reason=f"MappingSupportVerifier did not return valid JSON. Raw output: {content}"
+-            )
+\ No newline at end of file
+```
+
+<!-- batch7-diff-10 -->
+
+#### backend/test_abbr_candidate_expansion.py
+
+```diff
+diff --git a/backend/test_abbr_candidate_expansion.py b/backend/test_abbr_candidate_expansion.py
+deleted file mode 100644
+index 014b9e4..0000000
+--- a/backend/test_abbr_candidate_expansion.py
++++ /dev/null
+@@ -1,42 +0,0 @@
+-from services.abbr_service import ABBRService
+-
+-def main():
+-    service = ABBRService()
+-
+-    texts = [
+-        "The patient has SOB, DM, and HTN.",
+-        "The patient reports CP.",
+-        "The child has a history of CP since birth.",
+-        "The patient has XYZ.",
+-        "The patient developed AKI after dehydration."
+-    ]
+-
+-    for text in texts:
+-        result = service.simple_llm_expansion(text)
+-
+-        print("原始文本:")
+-        print(result["original_text"])
+-        print("="*50)
+-
+-        print("候选扩展:")
+-        for group in result["abbreviation_candidates"]:
+-            print("缩写:", group["abbreviation"])
+-            print("候选来源:", group.get("candidate_source"))
+-            print("原始候选:", group["candidates"])
+-            print("过滤后候选:", group["filtered_candidates"])
+-            print("Coverage:", group["coverage"])
+-            print("-" * 30)
+-
+-        print("扩展后文本:")
+-        print(result["expanded_text"])
+-        print("=" * 50)
+-
+-        print("映射结果:")
+-        for item in result["mappings"]:
+-            print(item)
+-
+-        print("-" * 80)
+-
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-11 -->
+
+#### backend/test_abbr_llm.py
+
+```diff
+diff --git a/backend/test_abbr_llm.py b/backend/test_abbr_llm.py
+deleted file mode 100644
+index f502d40..0000000
+--- a/backend/test_abbr_llm.py
++++ /dev/null
+@@ -1,19 +0,0 @@
+-from services.abbr_service import ABBRService
+-
+-def main():
+-    service = ABBRService()
+-
+-    text = "The patient has SOB, DM, and HTN."
+-
+-    result = service.simple_llm_expansion(text)
+-
+-    print("原始文本:")
+-    print(result["original_text"])
+-
+-    print("=" * 50)
+-
+-    print("LLM扩展后文本:")
+-    print(result["expanded_text"])
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-12 -->
+
+#### backend/test_abbr_llm_json.py
+
+```diff
+diff --git a/backend/test_abbr_llm_json.py b/backend/test_abbr_llm_json.py
+deleted file mode 100644
+index e388f83..0000000
+--- a/backend/test_abbr_llm_json.py
++++ /dev/null
+@@ -1,23 +0,0 @@
+-from services.abbr_service import ABBRService
+-
+-def main():
+-    service = ABBRService()
+-
+-    text = "The patient has SOB, DM, and HTN"
+-
+-    result = service.simple_llm_expansion(text)
+-
+-    print("原始文本:")
+-    print(result["original_text"])
+-    print("="*50)
+-
+-    print("扩展后文本:")
+-    print(result["expanded_text"])
+-    print("="*50)
+-
+-    print("缩写映射:")
+-    for item in result["mappings"]:
+-        print(item)
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-13 -->
+
+#### backend/test_abbr_service.py
+
+```diff
+diff --git a/backend/test_abbr_service.py b/backend/test_abbr_service.py
+deleted file mode 100644
+index de13e54..0000000
+--- a/backend/test_abbr_service.py
++++ /dev/null
+@@ -1,26 +0,0 @@
+-from services.abbr_service import ABBRService
+-
+-def main():
+-    #将类实例化
+-    service = ABBRService()
+-
+-    text = "The patient has SOB, DM, and HTN."
+-
+-    result = service.expand_abbreviations(text)
+-
+-    print("原始文本:")
+-    print(result["original_text"])
+-
+-    print("="*50)
+-
+-    print("扩展后文本:")
+-    print(result["expanded_text"])
+-
+-    print("="*50)
+-
+-    print("替换详情:")
+-    for item in result["replacements"]:
+-        print(item)
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-14 -->
+
+#### backend/test_abbr_standardize.py
+
+```diff
+diff --git a/backend/test_abbr_standardize.py b/backend/test_abbr_standardize.py
+deleted file mode 100644
+index bec97da..0000000
+--- a/backend/test_abbr_standardize.py
++++ /dev/null
+@@ -1,50 +0,0 @@
+-from services.abbr_service import ABBRService
+-
+-def main():
+-    #实例化类
+-    service = ABBRService()
+-    text = "The patient has SOB, DM, and HTN"
+-
+-    result = service.expand_and_standardize(text)
+-
+-    print("原始文本:")
+-    print(result["original_text"])
+-    print("="*50)
+-
+-    print("扩展后文本:")
+-    print(result["expanded_text"])
+-    print("="*50)
+-
+-    print("标准化结果:")
+-    #这里的item是text中每个医疗实体的元数据加从snomed数据库检索出来的候选值的属性所组合出来的
+-    for item in result["standardization"]["entities"]:
+-        print("实体:",item["entity"])
+-        print("实体类型:",item["entity_label"])
+-        print("候选术语:")
+-        for candidate in item["candidates"]:
+-            print(
+-                candidate["concept_name"],
+-                candidate["score"],
+-                candidate.get("rerank_score")
+-            )
+-        print("-"*50)
+-
+-   #改写词与改写前词与改写词的候选
+-    print("缩写映射标准化结果:")
+-
+-    for item in result["mapping_standardizations"]:
+-        print("缩写:", item["abbreviation"])
+-        print("扩展:", item["expansion"])
+-        print("SNOMED候选:")
+-
+-        for candidate in item["candidates"]:
+-            print(
+-                candidate["concept_name"],
+-                candidate["score"],
+-                candidate.get("rerank_score")
+-            )
+-
+-        print("-" * 50)
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-15 -->
+
+#### backend/test_abbr_verify.py
+
+```diff
+diff --git a/backend/test_abbr_verify.py b/backend/test_abbr_verify.py
+deleted file mode 100644
+index b611af1..0000000
+--- a/backend/test_abbr_verify.py
++++ /dev/null
+@@ -1,57 +0,0 @@
+-"""
+-原始文本
+-  ↓
+-LLM abbreviation expansion
+-  ↓
+-NER + MedicalRetriever
+-  ↓
+-SNOMED candidates
+-  ↓
+-Verifier LLM
+-  ↓
+-is_valid / confidence / reason
+-"""
+-
+-from services.abbr_service import ABBRService
+-
+-def main():
+-    service = ABBRService()
+-
+-    text = "The patient has SOB, DM, and HTN."
+-
+-    result = service.expand_standardize_and_verify(text)
+-
+-    print("原始文本:")
+-    print(result["original_text"])
+-    print("="*50)
+-
+-    print("扩展后文本:")
+-    print(result["expanded_text"])
+-
+-    print("=" * 50)
+-
+-    print("缩写映射:")
+-    for item in result["mappings"]:
+-        print(item)
+-    print("="*50)
+-
+-    print("逐项校验结果:")
+-    print(result["verification"])
+-    print("="*50)
+-
+-    print("缩写映射标准化结果:")
+-    for item in result["mapping_standardizations"]:
+-        print("缩写:",item["abbreviation"])
+-        print("扩展:",item["expansion"])
+-        print("SNOMED候选:")
+-
+-        for candidate in item["candidates"]:
+-            print(
+-                candidate["concept_name"],
+-                candidate["score"],
+-                candidate.get("rerank_score")
+-            )
+-        print("-"*50)
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-16 -->
+
+#### backend/test_forced_reflection.py.py
+
+```diff
+diff --git a/backend/test_forced_reflection.py.py b/backend/test_forced_reflection.py.py
+deleted file mode 100644
+index 5d6607e..0000000
+--- a/backend/test_forced_reflection.py.py
++++ /dev/null
+@@ -1,54 +0,0 @@
+-from services.abbr_reflection_service import ABBRReflectionService
+-
+-
+-def main():
+-    reflector = ABBRReflectionService()
+-
+-    original_text = "The patient denies SOB."
+-
+-    wrong_expanded_text = "The patient has shortness of breath."
+-
+-    fake_verification = {
+-        "sentence_validity": {
+-            "is_valid": False,
+-            "confidence": 0.2,
+-            "reason": "The expansion changed negation from denies to has.",
+-            "issues": ["negation_changed", "changed_meaning"]
+-        },
+-        "mapping_validations": [
+-            {
+-                "abbreviation": "SOB",
+-                "expansion": "shortness of breath",
+-                "context_supported": True,
+-                "snomed_supported": True,
+-                "is_valid": True,
+-                "confidence": 0.95,
+-                "reason": "SOB correctly expands to shortness of breath.",
+-                "issues": []
+-            }
+-        ],
+-        "overall_valid": False
+-    }
+-
+-    result = reflector.reflect(
+-        original_text=original_text,
+-        previous_expanded_text=wrong_expanded_text,
+-        verification=fake_verification
+-    )
+-
+-    print("原始文本:")
+-    print(original_text)
+-
+-    print("=" * 50)
+-
+-    print("错误扩写:")
+-    print(wrong_expanded_text)
+-
+-    print("=" * 50)
+-
+-    print("Reflection修正结果:")
+-    print(result)
+-
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-17 -->
+
+#### backend/test_mapping_support_verifier.py
+
+```diff
+diff --git a/backend/test_mapping_support_verifier.py b/backend/test_mapping_support_verifier.py
+deleted file mode 100644
+index 6808a82..0000000
+--- a/backend/test_mapping_support_verifier.py
++++ /dev/null
+@@ -1,62 +0,0 @@
+-import sys
+-from pathlib import Path
+-
+-BACKEND_DIR = Path(__file__).resolve().parents[1]
+-sys.path.append(str(BACKEND_DIR))
+-
+-from services.mapping_support_verifier import MappingSupportVerifier
+-
+-
+-def main():
+-    verifier = MappingSupportVerifier()
+-
+-    test_cases = [
+-        {
+-            "text": "The patient was evaluated for LMN.",
+-            "abbreviation": "LMN",
+-            "expansion": "Lower Motor Neuron"
+-        },
+-        {
+-            "text": "The patient shows LMN signs with weakness and reduced reflexes.",
+-            "abbreviation": "LMN",
+-            "expansion": "Lower Motor Neuron"
+-        },
+-        {
+-            "text": "The patient has DM and QRS.",
+-            "abbreviation": "QRS",
+-            "expansion": "QRS complex"
+-        },
+-        {
+-            "text": "The ECG showed a widened QRS complex.",
+-            "abbreviation": "QRS",
+-            "expansion": "QRS complex"
+-        },
+-        {
+-            "text": "The patient has MS with a diastolic murmur.",
+-            "abbreviation": "MS",
+-            "expansion": "mitral stenosis"
+-        },
+-        {
+-            "text": "The patient has MS with diastolic murmur, mitral valve disease, and left atrial enlargement.",
+-            "abbreviation": "MS",
+-            "expansion": "mitral stenosis"
+-        }
+-    ]
+-
+-    for case in test_cases:
+-        result = verifier.verify(
+-            text=case["text"],
+-            abbreviation=case["abbreviation"],
+-            expansion=case["expansion"]
+-        )
+-
+-        print("=" * 80)
+-        print("Text:", case["text"])
+-        print("Mapping:", case["abbreviation"], "->", case["expansion"])
+-        print("Supported:", result.supported)
+-        print("Confidence:", result.confidence)
+-        print("Reason:", result.reason)
+-
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-18 -->
+
+#### backend/test_reflection.py
+
+```diff
+diff --git a/backend/test_reflection.py b/backend/test_reflection.py
+deleted file mode 100644
+index 4f5bd19..0000000
+--- a/backend/test_reflection.py
++++ /dev/null
+@@ -1,40 +0,0 @@
+-from services.abbr_reflection_service import ABBRReflectionService
+-
+-def main():
+-    service = ABBRReflectionService()
+-
+-    original_text =  "The patient denies SOB."
+-
+-    previous_expanded_text = "The patient has shortness of breath."
+-
+-    verification = {
+-        "sentence_validity": {
+-            "is_valid": False,
+-            "confidence": 0.2,
+-            "reason": "The negation was changed from denies to has.",
+-            "issues": ["negation_changed", "changed_meaning"]
+-        },
+-        "mapping_validations": [
+-            {
+-                "abbreviation": "SOB",
+-                "expansion": "shortness of breath",
+-                "context_supported": True,
+-                "snomed_supported": True,
+-                "is_valid": True,
+-                "confidence": 0.9,
+-                "reason": "SOB commonly means shortness of breath.",
+-                "issues": []
+-            }
+-        ],
+-        "overall_valid": False
+-    }
+-
+-    result = service.reflect(
+-        original_text=original_text,
+-        previous_expanded_text=previous_expanded_text,
+-        verification=verification
+-    )
+-    print(result)
+-
+-if __name__ == "__main__":
+-    main()
+\ No newline at end of file
+```
+
+<!-- batch7-diff-19 -->
+
+### 回退与追溯
+
+- 回退本批提交可恢复全部 V9 文件与旧测试；批次1–6提交不受影响。
+- 本轮生成的 Benchmark JSON 与 verify 临时日志已清理，不纳入提交。
+- 用户已有及新建的批次4/6/7指令与 V11 项目地图文件不纳入提交。

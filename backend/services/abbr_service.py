@@ -2,13 +2,10 @@ from langchain_deepseek import ChatDeepSeek
 from services.medical_standardizer import MedicalStandardizer
 from services.abbr_verifier import ABBVerifier
 from services.medical_retriever import MedicalRetriever
-from services.abbr_reflection_service import ABBRReflectionService
 from services.abbr_candidate_retriever import ABBRCandidateRetriever
 from services.abbr_candidate_coverage_evaluator import ABBRCandidateCoverageEvaluator
 from services.abbr_candidate_fallback_retriever import ABBRCandidateFallbackRetriever
-from services.mapping_support_verifier import MappingSupportVerifier
 from data.abbr_candidates import ABBR_CANDIDATES
-import json
 import re
 #加载环境变量
 import os
@@ -69,193 +66,9 @@ class ABBRService:
         self.ner_service = self.standardizer.ner_service
         self.retriever = MedicalRetriever()
         self.verifier = ABBVerifier()
-        self.reflector = ABBRReflectionService()
         self.candidate_retriever = ABBRCandidateRetriever()
         self.fallback_retriever = ABBRCandidateFallbackRetriever()
         self.coverage_evaluator = ABBRCandidateCoverageEvaluator()
-        # V10 Experimental Module，当前 V9 Stable 主链路禁用
-        self.mapping_support_verifier = MappingSupportVerifier()
-    #使用llm将text文本中的简写词给重写
-    #返回：1.expanded_text:扩展后的完整文本。2.mappings:每个缩写对应的扩展结果。
-    def simple_llm_expansion(self,text:str):
-        #使用llm扩展医学缩写
-        #1.先从候选库召回abbreviation candidates
-        #2.再让llm基于上下文从后选中选择
-        abbreviation_candidates = self._get_abbreviation_candidates(text)
-
-        prompt = f"""
-        You are a medical abbreviation expansion assistant.
-
-        Task:
-        Expand medical abbreviations in the clinical text.
-
-        Important:
-        You must choose expansions from the provided abbreviation candidates when candidates are available.
-
-        Clinical text:
-        {text}
-
-        Abbreviation candidates after coverage filtering::
-        {json.dumps(abbreviation_candidates, ensure_ascii=False, indent=2)}
-
-        Rules:
-        1. Only expand medical abbreviations.
-        2. Keep the original sentence meaning unchanged.
-        3. Do not add diagnosis, explanation, or extra information.
-        4. Use filtered_candidates as the primary candidate set.
-        5. If filtered_candidates is empty because coverage.coverage_ok is false, do not force an expansion.
-        6. If filtered_candidates is empty but coverage.coverage_ok is true, use original candidates with low confidence.
-        7. Preserve negation, uncertainty, severity, timing, and clinical meaning.
-        8. Return only valid JSON.
-        9. Do not use markdown.
-        
-        Return JSON format:
-        {{
-        "expanded_text": "expanded clinical text here",
-        "mappings": [
-            {{
-            "abbreviation": "SOB",
-            "expansion": "shortness of breath",
-            "source": "candidate"
-            }},
-            {{
-            "abbreviation": "XYZ",
-            "expansion": null,
-            "source": "coverage_failed"
-            }}
-        ]
-        }}
-        """
-        response = self.llm.invoke(prompt)
-        content = response.content.strip()
-        content = content.replace("```json", "").replace("```", "").strip()
-        
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            return {
-                "original_text":text,
-                "expanded_text":content,
-                "mappings":[],
-                "abbreviation_candidates": abbreviation_candidates,
-                "parse_error":True
-            }
-        #返回替换前和替换后的句子
-        return {
-            "original_text": text,
-            "expanded_text": parsed.get("expanded_text", text),
-            "mappings": parsed.get("mappings", []),
-            "abbreviation_candidates": abbreviation_candidates,
-            "parse_error": False
-        }
-
-    def expand_abbreviations(self,text:str):
-        #创建一个text副本，用来之后展示哪些源文本被替换做参照
-        expanded_text = text
-        #创建一个列表，记录替换历史
-        replacements = []
-
-        #将字典的键值对取出，判断文本中是否有需要替换的键
-        for abbr,full_term in self.abbr_dict.items():
-            #如果缩写在当前文本中
-            if abbr in expanded_text:
-                #则将文本中的缩写替换为full_term。然后再赋值回expanded_text
-                expanded_text = expanded_text.replace(abbr,full_term)
-                #如果发生替换，就记录下来
-                replacements.append({
-                    "abbreviation":abbr,
-                    "full_term":full_term
-                })
-        #返回就文本新文本的对照，以及替换记录
-        return{
-            "original_text":text,
-            "expanded_text":expanded_text,
-            "replacements":replacements
-        }
-    
-    def expand_and_standardize(self,text:str):
-        """llm缩写扩展 + 医学术语标准化
-            同时返回：
-            1. 整句扩展后的标准化结果
-            2. 每个缩写 expansion 对应的 SNOMED 候选        
-        """
-        #使用simple_llm_expansion改写text
-        expansion_result = self.simple_llm_expansion(text)
-        #提取重写的text和重写时改动的词汇
-        expanded_text = expansion_result["expanded_text"]
-        mappings = expansion_result.get("mappings",[])
-        
-        #提取新生成的text其中的医学实体
-        standardization_result = self.standardizer.standardize(expanded_text)
-
-        
-        mapping_standardizations = []
-        for mapping in mappings:
-            expansion = mapping.get("expansion")
-
-            docs = self.retriever.retrieve(
-                query=expansion,
-                top_k=10,
-                domain_filter=None,
-                score_threshold=0.6
-            )
-            candidates = []
-            for doc in docs[:3]:
-                metadata = doc["metadata"]
-
-                candidates.append({
-                    "concept_id":metadata["concept_id"],
-                    "concept_name":metadata["concept_name"],
-                    "domain_id":metadata["domain_id"],
-                    "concept_code":metadata["concept_code"],
-                    "score":metadata["score"],
-                    "rerank_score":metadata.get("rerank_score")
-                })
-            mapping_standardizations.append({
-                "abbreviation":mapping["abbreviation"],
-                "expansion":expansion,
-                "candidates":candidates
-            })
-        
-        return {
-            "original_text":text,
-            "expanded_text":expanded_text,
-            "mappings":mappings,
-            "standardization":standardization_result,
-            "mapping_standardizations":mapping_standardizations
-        }
-    
-    def expand_standardize_and_verify(self,text:str):
-        """
-        LLM缩写扩写 + NER/RAG标准化+逐项扩写词校验
-        """
-        pipeline_result = self.expand_and_standardize(text)
-
-        
-        verification = self.verifier.verify_mappings(
-            original_text=pipeline_result["original_text"],
-            expanded_text=pipeline_result["expanded_text"],
-            mapping_standardizations=pipeline_result["mapping_standardizations"]
-        )
-        return{
-            **pipeline_result,
-            "verification":verification
-        }
-    
-    def _rebuild_expanded_text(self,original_text:str,mappings:list[dict]) -> str:
-        #根据通过 support verification的mappings,重新构建expanded_text
-        #目的：如果某个mapping被MappingSupportVerifier拒绝，那么对应缩写应该保留原样，而不是继续出现在expanded_text里
-        rebuilt_text = original_text
-        for mapping in mappings:
-            abbr = mapping.get("abbreviation")
-            expansion = mapping.get("expansion")
-
-            if not abbr or not expansion:
-                continue
-            rebuilt_text = rebuilt_text.replace(abbr,expansion)
-
-        return rebuilt_text
-
     def _build_expanded_text_deterministic(self, text: str, chosen: list[dict]) -> str:
         """确定性扩写:对每个 {abbreviation -> expansion} 按 token 边界替换。
         - \b...\b 保证不误伤子串(CP 不命中 CPR)
@@ -281,76 +94,6 @@ class ABBRService:
             result = result[:start] + expansion + result[end:]
         return result
 
-    def _filter_mappings_by_context_support(
-        self, original_text: str, mappings: list[dict]
-    ) -> tuple[list[dict], list[dict]]:
-        """
-        使用 MappingSupportVerifier 过滤上下文不支持的 abbreviation -> expansion。
-
-        V10.1 策略：
-        1. 单候选缩写：直接通过
-        2. 多候选缩写：调用 MappingSupportVerifier
-        3. 缺失 abbreviation / expansion：拒绝
-        """
-        supported_mappings = []
-        support_results = []
-
-        for mapping in mappings:
-            abbr = mapping.get("abbreviation")
-            expansion = mapping.get("expansion")
-
-            if not abbr or not expansion:
-                support_results.append({
-                    "abbreviation": abbr,
-                    "expansion": expansion,
-                    "supported": False,
-                    "confidence": 0.0,
-                    "reason": "Missing abbreviation or expansion.",
-                    "gate": "missing_field"
-                })
-                continue
-
-            # 先查看候选数量
-            candidates = self.candidate_retriever.retrieve(abbr)
-            candidate_count = len(candidates)
-
-            # V10.1：单候选缩写直接通过
-            if candidate_count <= 1:
-                supported_mappings.append(mapping)
-                support_results.append({
-                    "abbreviation": abbr,
-                    "expansion": expansion,
-                    "supported": True,
-                    "confidence": 1.0,
-                    "reason": "Single-candidate abbreviation; mapping support verification skipped.",
-                    "gate": "single_candidate_pass"
-                })
-                continue
-
-            # 多候选缩写才调用 MappingSupportVerifier
-            support_result = self.mapping_support_verifier.verify(
-                text=original_text,
-                abbreviation=abbr,
-                expansion=expansion
-            )
-
-            support_item = {
-                "abbreviation": abbr,
-                "expansion": expansion,
-                "supported": support_result.supported,
-                "confidence": support_result.confidence,
-                "reason": support_result.reason,
-                "gate": "mapping_support_verifier"
-            }
-
-            support_results.append(support_item)
-
-            if support_result.supported:
-                supported_mappings.append(mapping)
-
-        return supported_mappings, support_results
-
-    #max_retries=2意思是最多允许 Reflection 修正 2 次。加第一次 正常尝试。所以总共最多三次
     def expand_verify_with_retry(self,text:str,max_retries:int=2):
         """
         缩写扩展 + 标准化 + 校验 + Reflection 重试。
@@ -464,9 +207,6 @@ class ABBRService:
                         })
                     s["std_cache"] = cand
                     s["changed"] = False
-
-            # 整句标准化(沿用 V9:存档留痕,不喂 verify)
-            standardization_result = self.standardizer.standardize(current_expanded_text)
 
             # 只对 PENDING 做 verify(LOCKED_OK 冻结不复验)
             mapping_standardizations = [
@@ -726,17 +466,6 @@ class ABBRService:
         return False
 
     
-
-
-
-
-
-
-
-
-
-
-
 
 
 """
