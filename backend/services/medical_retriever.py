@@ -90,9 +90,13 @@ class MedicalRetriever:
             #如果有过滤条件但是条件不匹配就跳过本轮循环
             if domain_filter is not None and item["domain_id"]!=domain_filter:
                 continue
-            #如果有最低分数限制，分数没达到就跳过
-            if score_threshold is not None and item["score"] < score_threshold:
-                continue
+            #如果有最低分数限制：原始分 或 重排分 任一过线即保留
+            #(修复:原来只卡 raw score,会把被 bonus/domain 顶到最前、但 raw 偏低的好候选误删;
+            # 重排和过滤用同一口径,避免互相打架)
+            if score_threshold is not None:
+                effective_score = max(item["score"], item.get("rerank_score", item["score"]))
+                if effective_score < score_threshold:
+                    continue
             content = (
                     f"Concept Name:{item['concept_name']}\n"
                     f"Fully Specified Name:{item.get('FSN', '')}\n"

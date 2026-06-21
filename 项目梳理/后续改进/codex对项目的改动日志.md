@@ -901,3 +901,64 @@ index e9a40a4..da7bfd9 100644
 - 已知限制继续保留：rerank 与 threshold 使用不同口径，评测集中量化为 8 次调用、9 个候选受影响。
 - 更上游还存在 Milvus 先按 raw score 截断 top-k 的两阶段召回限制，本批未处理。
 - 原有 `benchmark_results.json` 在本轮开始前已有修改，评测后使用备份原样恢复。
+
+## 2026-06-21 · V11 批次 6 重新合入：统一 rerank 与 threshold 口径
+
+### 合入决定
+
+- 用户在复盘上一轮数据后明确选择按机理正确性重新合入。
+- 上一轮已量化：8 次 retrieve 调用触发，合计救回 9 个候选，证明 raw-score filter 覆盖 rerank 的 bug 真实存在。
+- `ambiguous_004` 的 MS 波动发生于上游 coverage 选词阶段，与本批检索过滤因果无关。
+
+### 改动内容
+
+- 仅修改 `backend/services/medical_retriever.py`。
+- `score_threshold` 从只检查 `item["score"]` 改为检查 `max(raw_score, rerank_score)`。
+- 正 bonus 顶过阈值的候选可以保留；raw score 已过线的候选不会因负 bonus 被误删。
+- 不包含任何临时计数或 print。
+
+### 验证结果
+
+- 编译：通过。
+- 批次1确定性单测：通过，输出 `OK`。
+- 本地边界测试：通过，输出 `EFFECTIVE_SCORE_FILTER_OK`。
+  - raw `0.55`、rerank 过线的候选被救回。
+  - raw `0.61`、受负 bonus 的候选仍保留。
+  - raw 与 rerank 均不足的候选被过滤。
+- Milvus `127.0.0.1:19530`：连通。
+- 有效非沙箱 74 例 Benchmark：`71/74 = 0.9595`。
+- 分类：single `10/10`、ambiguous `10/10`、multi `10/10`、coverage_failed `5/5`、low_context `2/5`、negation `10/10`、casi_ambiguous `18/18`、fallback_should_expand `6/6`。
+- 失败仅为既有 low-context 三例：`coverage_003`、`coverage_005`、`coverage_006`；没有新增类别回归，满足重新合入判据。
+- 复验过程说明：首次 Milvus 未启动；随后默认沙箱轮因 DeepSeek 网络被阻断而无效。用户知情授权第三方 API 传输后，非沙箱轮成功完成，上述 `71/74` 为有效结果。
+
+### 本轮 Git diff
+
+```diff
+diff --git a/backend/services/medical_retriever.py b/backend/services/medical_retriever.py
+index e9a40a4..1aa9dfa 100644
+--- a/backend/services/medical_retriever.py
++++ b/backend/services/medical_retriever.py
+@@ -90,9 +90,13 @@ class MedicalRetriever:
+             #如果有过滤条件但是条件不匹配就跳过本轮循环
+             if domain_filter is not None and item["domain_id"]!=domain_filter:
+                 continue
+-            #如果有最低分数限制，分数没达到就跳过
+-            if score_threshold is not None and item["score"] < score_threshold:
+-                continue
++            #如果有最低分数限制：原始分 或 重排分 任一过线即保留
++            #(修复:原来只卡 raw score,会把被 bonus/domain 顶到最前、但 raw 偏低的好候选误删;
++            # 重排和过滤用同一口径,避免互相打架)
++            if score_threshold is not None:
++                effective_score = max(item["score"], item.get("rerank_score", item["score"]))
++                if effective_score < score_threshold:
++                    continue
+             content = (
+                     f"Concept Name:{item['concept_name']}\n"
+                     f"Fully Specified Name:{item.get('FSN', '')}\n"
+```
+
+### 已知限制
+
+- Milvus 仍先按 raw score 截断 `top_k=10`；raw 排名在召回池之外、但 domain 完全匹配的概念仍无法进入 rerank，本批不处理。
+- 74 例 Benchmark 样本较小且 coverage 使用外部 LLM，单例波动仍可能造成约 1.35 个百分点噪声。
+- 评测后恢复本轮前已有修改的 `benchmark_results.json`，不把生成结果纳入提交。
