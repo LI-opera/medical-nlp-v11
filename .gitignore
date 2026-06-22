@@ -5,4 +5,7 @@ __pycache__/
 .env
 .env.*
 .DS_Store
-.vscode/backend/evaluation/benchmark_results.json
+.vscode/
+backend/evaluation/benchmark_results.json
+backend/data/snomed_clinical.csv
+snomed_clinical.csv

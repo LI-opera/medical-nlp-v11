@@ -186,7 +186,7 @@ class ABBRService:
                     score_threshold=0.6
                 )
                 cand = []
-                for doc in docs[:3]:
+                for doc in docs[:10]:
                     md = doc["metadata"]
                     cand.append({
                         "concept_id": md["concept_id"],
