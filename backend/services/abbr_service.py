@@ -117,12 +117,6 @@ class ABBRService:
             best = info.get("best_expansion")
             if not best:
                 continue
-            # 候选池(确定性 reflect 的换候选空间);保证 best 排最前
-            pool = [c.get("expansion") for c in info.get("candidates", []) if c.get("expansion")]
-            if best in pool:
-                pool = [best] + [e for e in pool if e != best]
-            else:
-                pool = [best] + pool
             states.append({
                 "abbreviation": info["abbreviation"],
                 "expansion": best,
@@ -130,10 +124,8 @@ class ABBRService:
                 "domain": info.get("chosen_domain"),
                 "source": info.get("candidate_source"),
                 "status": "PENDING",
-                "pool": pool,
-                "tried": {best},
                 "std_cache": None,
-                "changed": True,
+                "std_concept": None,
             })
 
         current_abbreviation_candidates = candidate_infos
@@ -184,29 +176,27 @@ class ABBRService:
             if not pending:
                 break
 
-            # 增量检索:只对本轮 expansion 变过的 PENDING 重检索
+            # 每个 PENDING mapping 检索一次 SNOMED 候选
             for s in pending:
-                if s["changed"]:
-                    docs = self.retriever.retrieve(
-                        query=s["expansion"],
-                        top_k=10,
-                        domain_filter=None,
-                        domain_boost=s.get("domain"),
-                        score_threshold=0.6
-                    )
-                    cand = []
-                    for doc in docs[:3]:
-                        md = doc["metadata"]
-                        cand.append({
-                            "concept_id": md["concept_id"],
-                            "concept_name": md["concept_name"],
-                            "domain_id": md["domain_id"],
-                            "concept_code": md["concept_code"],
-                            "score": md["score"],
-                            "rerank_score": md.get("rerank_score"),
-                        })
-                    s["std_cache"] = cand
-                    s["changed"] = False
+                docs = self.retriever.retrieve(
+                    query=s["expansion"],
+                    top_k=10,
+                    domain_filter=None,
+                    domain_boost=s.get("domain"),
+                    score_threshold=0.6
+                )
+                cand = []
+                for doc in docs[:3]:
+                    md = doc["metadata"]
+                    cand.append({
+                        "concept_id": md["concept_id"],
+                        "concept_name": md["concept_name"],
+                        "domain_id": md["domain_id"],
+                        "concept_code": md["concept_code"],
+                        "score": md["score"],
+                        "rerank_score": md.get("rerank_score"),
+                    })
+                s["std_cache"] = cand
 
             # 只对 PENDING 做 verify(LOCKED_OK 冻结不复验)
             mapping_standardizations = [
@@ -224,27 +214,36 @@ class ABBRService:
             )
             validations = verification.get("mapping_validations", [])
 
-            def _find_validation(abbr):
+            def _find_validation(state):
                 for v in validations:
-                    if v.get("abbreviation") == abbr:
+                    if (
+                        v.get("abbreviation") == state["abbreviation"]
+                        and v.get("expansion") == state["expansion"]
+                    ):
                         return v
                 return None
 
-            # 逐个 PENDING 判定:通过→LOCKED_OK;不过→换未试候选 or 弃权
+            # 扩写由 coverage 决定；verify 只选择忠实 SNOMED 概念或弃码
             for s in pending:
-                v = _find_validation(s["abbreviation"])
-                passed = bool(v and v.get("is_valid") is True)
-                if passed:
-                    s["status"] = "LOCKED_OK"
-                else:
-                    untried = [e for e in s["pool"] if e not in s["tried"]]
-                    if untried:
-                        # 选择型 reflect:取池里下一个未试候选(确定性,不调 LLM)
-                        s["expansion"] = untried[0]
-                        s["tried"].add(untried[0])
-                        s["changed"] = True
-                    else:
-                        s["status"] = "LOCKED_ABSTAIN"
+                v = _find_validation(s)
+                chosen_index = v.get("chosen_index") if v else None
+                faithful = bool(v and v.get("standardization_faithful") is True)
+                valid_index = (
+                    faithful
+                    and isinstance(chosen_index, int)
+                    and not isinstance(chosen_index, bool)
+                    and 0 <= chosen_index < len(s["std_cache"])
+                )
+                s["std_concept"] = s["std_cache"][chosen_index] if valid_index else None
+                s["status"] = "LOCKED_OK"
+
+            for item in mapping_standardizations:
+                state = next(
+                    s for s in pending
+                    if s["abbreviation"] == item["abbreviation"]
+                    and s["expansion"] == item["expansion"]
+                )
+                item["chosen_concept"] = state["std_concept"]
 
             # 用未弃权的 mapping 重新确定性拼句
             current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
@@ -300,6 +299,7 @@ class ABBRService:
                     "abbreviation": s["abbreviation"],
                     "expansion": s["expansion"],
                     "candidates": s["std_cache"],
+                    "chosen_concept": s["std_concept"],
                 }
                 for s in locked_ok
             ],

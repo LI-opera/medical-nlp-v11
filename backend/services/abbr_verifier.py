@@ -86,122 +86,101 @@ class ABBVerifier:
                 "issues": ["invalid_json"]
             }
     
-    def verify_mappings(self,original_text:str,expanded_text:str,mapping_standardizations:list[dict]):
-        #逐个校验abbreviation->expansion是否合理,同时校验整句扩写是否保持原意
+    def verify_mappings(
+        self,
+        original_text: str,
+        expanded_text: str,
+        mapping_standardizations: list[dict]
+    ):
+        """选择每个扩写最忠实的 SNOMED 标准化概念，或明确弃码。"""
+        indexed_mappings = []
+        for mapping in mapping_standardizations:
+            indexed_mappings.append({
+                "abbreviation": mapping.get("abbreviation"),
+                "expansion": mapping.get("expansion"),
+                "candidates": [
+                    {"index": index, **candidate}
+                    for index, candidate in enumerate(mapping.get("candidates") or [])
+                ],
+            })
+
         prompt = f"""
-        You are a medical abbreviation verification assistant.
+        You are a medical terminology grounding verifier.
 
-        Task:
-        Evaluate the abbreviation expansion result from two separate perspectives:
+        For each abbreviation mapping you are given the expansion and a SHORT LIST of
+        candidate SNOMED concepts retrieved for that expansion. Each candidate has a
+        zero-based index, concept_name, domain_id, and retrieval scores.
 
-        1. Sentence-level validity:
-        Check whether the expanded clinical text preserves the meaning of the original clinical text.
+        Your job is NOT to re-judge whether the abbreviation expansion is correct.
+        That decision has already been made by the abbreviation coverage stage.
 
-        2. Mapping-level validity:
-        Check whether each abbreviation-expansion mapping is medically reasonable and supported by context and SNOMED candidates.
+        Your job is to pick which candidate concept is a FAITHFUL standardization of
+        the expansion:
 
-        Original clinical text:
+        - chosen_index must be the zero-based index of the candidate whose concept_name
+          means the SAME clinical thing as the expansion.
+        - chosen_index must be null if NONE of the candidates faithfully represents the
+          expansion.
+        - standardization_faithful must be true only when chosen_index points to a
+          faithful candidate.
+        - Judge concept_name against the expansion's clinical meaning. Do not trust the
+          retrieval score by itself.
+        - A finding or condition must not be grounded to a rating scale, measurement,
+          procedure, or other related-but-different concept.
+        - Example: "chest pain" and "Chest pain rating" are not the same clinical thing,
+          so choose null unless another candidate faithfully represents chest pain.
+        - Only choose among the supplied candidates. Never invent a concept.
+        - Return exactly one mapping_validations item for each input mapping, in the
+          same order.
+        - Return raw valid JSON only. Do not use markdown.
+
+        Original clinical text (context only):
         {original_text}
 
-        Expanded clinical text:
+        Expanded clinical text (context only):
         {expanded_text}
 
-        Abbreviation mappings with SNOMED candidates:
-        {json.dumps(mapping_standardizations, ensure_ascii=False, indent=2)}
-
-        Important rules:
-        - Evaluate sentence_validity separately from mapping_validations.
-        - Do not merge the two judgments.
-        - The number of mapping_validations must be exactly the same as the number of input abbreviation mappings.
-        - A sentence can preserve meaning even if one mapping is uncertain.
-        - A mapping can be medically plausible even if the sentence-level expansion changed wording incorrectly.
-        - SNOMED candidates are supporting evidence, not final truth.
-        - Do not invent new abbreviations, diagnoses, symptoms, treatments, or assumptions.
-        - If uncertain, use low confidence and explain the issue.
-
-        Sentence-level evaluation:
-        1. Compare the original clinical text and expanded clinical text.
-        2. Check whether the expanded text only expands abbreviations.
-        3. Check whether negation, uncertainty, severity, timing, and clinical meaning are preserved.
-        4. If the expanded text adds, removes, or changes medical meaning, mark sentence_validity.is_valid as false.
-
-        Mapping-level evaluation for each item:
-        1. Check whether the abbreviation appears in the original clinical text.
-        2. Check whether the expansion appears in or is clearly reflected by the expanded clinical text.
-        3. Check whether the expansion is a plausible medical meaning of the abbreviation in this context.
-        4. Check whether SNOMED candidates generally support the expanded term.
-        5. If the abbreviation is ambiguous in this context, lower confidence and add an issue.
-        6. If SNOMED candidates are weak, unrelated, or missing, set snomed_supported to false and add an issue.
-
-        Issue labels:
-        - "abbreviation_not_found"
-        - "expansion_not_in_expanded_text"
-        - "added_information"
-        - "removed_information"
-        - "changed_meaning"
-        - "negation_changed"
-        - "unsupported_by_snomed"
-        - "ambiguous_abbreviation"
-        - "not_medical_abbreviation"
-        - "not_only_abbreviation_expansion"
-
-        Return raw JSON only.
-        Do not use markdown.
-        Do not include explanations outside the JSON.
+        Abbreviation expansions and indexed SNOMED candidates:
+        {json.dumps(indexed_mappings, ensure_ascii=False, indent=2)}
 
         Return JSON in exactly this structure:
         {{
-        "sentence_validity": {{
-            "is_valid": true,
-            "confidence": 0.0,
-            "reason": "brief explanation",
-            "issues": []
-        }},
-        "mapping_validations": [
+          "mapping_validations": [
             {{
-            "abbreviation": "SOB",
-            "expansion": "shortness of breath",
-            "context_supported": true,
-            "snomed_supported": true,
-            "is_valid": true,
-            "confidence": 0.0,
-            "reason": "brief explanation",
-            "issues": []
+              "abbreviation": "CP",
+              "expansion": "chest pain",
+              "chosen_index": 0,
+              "standardization_faithful": true,
+              "reason": "brief explanation"
             }}
-        ]
+          ]
         }}
         """
+
         response = self.llm.invoke(prompt)
         content = response.content.strip()
-        #去掉多余的字符串(防御性编程)
         content = content.replace("```json", "").replace("```", "").strip()
-        try:
-            #json字符串->python字典
-            parsed = json.loads(content)
 
-            sentence_validity = parsed.get("sentence_validity",{})
-            mapping_validations = parsed.get("mapping_validations",[])
-            #overall_valid = 整句有效 and 有缩写结果 and 所有缩写都有效
-            overall_valid=(
-                sentence_validity.get("is_valid") is True
-                and len(mapping_validations) > 0
-                and all(
-                    item.get("is_valid") is True
-                    for item in mapping_validations
-                )
-            )
-            return{
-                "sentence_validity":sentence_validity,
-                "mapping_validations":mapping_validations,
-                "overall_valid":overall_valid
+        try:
+            parsed = json.loads(content)
+            mapping_validations = parsed.get("mapping_validations", [])
+            return {
+                "sentence_validity": {
+                    "is_valid": True,
+                    "confidence": 1.0,
+                    "reason": "Expansion validity is decided upstream by coverage.",
+                    "issues": []
+                },
+                "mapping_validations": mapping_validations,
+                "overall_valid": len(mapping_validations) == len(mapping_standardizations)
             }
         except json.JSONDecodeError:
             return {
                 "sentence_validity": {
-                "is_valid": False,
-                "confidence": 0.0,
-                "reason": "Verifier did not return valid JSON.",
-                "issues": ["invalid_json"]
+                    "is_valid": True,
+                    "confidence": 1.0,
+                    "reason": "Expansion validity is decided upstream by coverage.",
+                    "issues": []
                 },
                 "mapping_validations": [],
                 "overall_valid": False,

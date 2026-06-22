@@ -2544,3 +2544,416 @@ index 4f5bd19..0000000
 - 回退本批提交可恢复全部 V9 文件与旧测试；批次1–6提交不受影响。
 - 本轮生成的 Benchmark JSON 与 verify 临时日志已清理，不纳入提交。
 - 用户已有及新建的批次4/6/7指令与 V11 项目地图文件不纳入提交。
+
+## 2026-06-22 · 批次8：将 verify 改造成 SNOMED 标准化卡点
+
+### 改动目的
+
+- 将 verify 从重复复核缩写扩写，改为在检索得到的 top-k SNOMED 概念中选择忠实标准化概念；没有忠实候选时明确弃码。
+- 扩写结果仍完全由 coverage 阶段决定，verify 不再换扩写或弃掉扩写。
+- API 的 `standardized_entities` 只输出 verify 选中的概念，不再盲取检索 top-1。
+
+### 改动文件与实现要点
+
+- `backend/services/abbr_verifier.py`
+  - `verify_mappings` 为候选补充零基 `index`，提示模型返回 `chosen_index`、`standardization_faithful` 与原因。
+  - 明确禁止只按检索分数选择，并用 `chest pain` 与 `Chest pain rating` 说明“相关但不等义”必须弃码。
+  - 扩写正确性标记为上游 coverage 已裁决；JSON 无效时返回空选择并让服务安全弃码。
+- `backend/services/abbr_service.py`
+  - 删除 verify 失败后换扩写候选、重复检索和扩写弃权逻辑。
+  - 对每个 mapping 校验 `chosen_index` 的类型、范围和 faithful 标记；合法则保存对应 `std_concept`，否则保存 `None`，两种情况均 `LOCKED_OK`。
+  - attempts 与最终 `mapping_standardizations` 均增加 `chosen_concept`。
+- `backend/api/main.py`
+  - `standardized_entities` 改读 `chosen_concept`；值为 `None` 时不输出编码。
+
+### 验证结果
+
+- `compileall`：通过。
+- 正确导入 `ABBVerifier`、`ABBRService` 与 FastAPI `app`：通过。
+- `backend/test_v11_deterministic.py`：通过（`OK`）。
+- 临时针对性测试：通过；覆盖选中非 top-1 忠实概念、无忠实概念时保留扩写并弃码、API 过滤未选概念。测试文件已删除。
+- 在线 Benchmark：`71/74 = 0.9595`，与批次7锚点一致，证明块①扩写未退化。
+- verify 临时打点：74 个 case、含多缩写 case 共观察到 `chosen_index=null` 86 次，证明标准化卡点实际执行了弃码；临时 print 已删除。
+- 真实 API：`Patient has CP.` 扩写为 `Patient has chest pain.`，未输出错误的 `Chest pain rating`；`Patient denies SOB.` 扩写为 `Patient denies shortness of breath.`，两者在当前稀疏库均因无忠实候选而返回空 `standardized_entities`。
+- `git diff --check`：通过。
+- Benchmark 结果文件已恢复为运行前版本；临时日志不纳入提交。
+
+### 回退与追溯
+
+- 回退本批提交即可恢复批次7的 verify 扩写复核与 API 盲取 top-1 行为。
+- 若后续标准化实体过少，先检查 SNOMED 子库覆盖和候选召回质量，不要放宽 verify 到接受评分量表、测量或相关但不等义概念。
+- 用户已有未跟踪的批次4/6/7/8指令与项目地图文件未修改、未纳入提交。
+
+### 本轮实际 Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/api/main.py b/backend/api/main.py
+index 5f7879f..1164b23 100644
+--- a/backend/api/main.py
++++ b/backend/api/main.py
+@@ -168,13 +168,12 @@ def expand_abbreviation_simple(
+ 
+     final_result = result.get("final_result", {}) or {}
+ 
+-    # 从每个 LOCKED_OK mapping 的 SNOMED 检索结果取 top-1 概念,作为标准化编码出口
++    # 只输出 verify 判定为忠实标准化的 SNOMED 概念
+     standardized_entities = []
+     for ms in final_result.get("mapping_standardizations", []):
+-        candidates = ms.get("candidates") or []
+-        if not candidates:
++        top = ms.get("chosen_concept")
++        if not top:
+             continue
+-        top = candidates[0]
+         standardized_entities.append({
+             "abbreviation": ms.get("abbreviation"),
+             "expansion": ms.get("expansion"),
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index b93aaa0..37fbece 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -117,12 +117,6 @@ class ABBRService:
+             best = info.get("best_expansion")
+             if not best:
+                 continue
+-            # 候选池(确定性 reflect 的换候选空间);保证 best 排最前
+-            pool = [c.get("expansion") for c in info.get("candidates", []) if c.get("expansion")]
+-            if best in pool:
+-                pool = [best] + [e for e in pool if e != best]
+-            else:
+-                pool = [best] + pool
+             states.append({
+                 "abbreviation": info["abbreviation"],
+                 "expansion": best,
+@@ -130,10 +124,8 @@ class ABBRService:
+                 "domain": info.get("chosen_domain"),
+                 "source": info.get("candidate_source"),
+                 "status": "PENDING",
+-                "pool": pool,
+-                "tried": {best},
+                 "std_cache": None,
+-                "changed": True,
++                "std_concept": None,
+             })
+ 
+         current_abbreviation_candidates = candidate_infos
+@@ -184,29 +176,27 @@ class ABBRService:
+             if not pending:
+                 break
+ 
+-            # 增量检索:只对本轮 expansion 变过的 PENDING 重检索
++            # 每个 PENDING mapping 检索一次 SNOMED 候选
+             for s in pending:
+-                if s["changed"]:
+-                    docs = self.retriever.retrieve(
+-                        query=s["expansion"],
+-                        top_k=10,
+-                        domain_filter=None,
+-                        domain_boost=s.get("domain"),
+-                        score_threshold=0.6
+-                    )
+-                    cand = []
+-                    for doc in docs[:3]:
+-                        md = doc["metadata"]
+-                        cand.append({
+-                            "concept_id": md["concept_id"],
+-                            "concept_name": md["concept_name"],
+-                            "domain_id": md["domain_id"],
+-                            "concept_code": md["concept_code"],
+-                            "score": md["score"],
+-                            "rerank_score": md.get("rerank_score"),
+-                        })
+-                    s["std_cache"] = cand
+-                    s["changed"] = False
++                docs = self.retriever.retrieve(
++                    query=s["expansion"],
++                    top_k=10,
++                    domain_filter=None,
++                    domain_boost=s.get("domain"),
++                    score_threshold=0.6
++                )
++                cand = []
++                for doc in docs[:3]:
++                    md = doc["metadata"]
++                    cand.append({
++                        "concept_id": md["concept_id"],
++                        "concept_name": md["concept_name"],
++                        "domain_id": md["domain_id"],
++                        "concept_code": md["concept_code"],
++                        "score": md["score"],
++                        "rerank_score": md.get("rerank_score"),
++                    })
++                s["std_cache"] = cand
+ 
+             # 只对 PENDING 做 verify(LOCKED_OK 冻结不复验)
+             mapping_standardizations = [
+@@ -224,27 +214,36 @@ class ABBRService:
+             )
+             validations = verification.get("mapping_validations", [])
+ 
+-            def _find_validation(abbr):
++            def _find_validation(state):
+                 for v in validations:
+-                    if v.get("abbreviation") == abbr:
++                    if (
++                        v.get("abbreviation") == state["abbreviation"]
++                        and v.get("expansion") == state["expansion"]
++                    ):
+                         return v
+                 return None
+ 
+-            # 逐个 PENDING 判定:通过→LOCKED_OK;不过→换未试候选 or 弃权
++            # 扩写由 coverage 决定；verify 只选择忠实 SNOMED 概念或弃码
+             for s in pending:
+-                v = _find_validation(s["abbreviation"])
+-                passed = bool(v and v.get("is_valid") is True)
+-                if passed:
+-                    s["status"] = "LOCKED_OK"
+-                else:
+-                    untried = [e for e in s["pool"] if e not in s["tried"]]
+-                    if untried:
+-                        # 选择型 reflect:取池里下一个未试候选(确定性,不调 LLM)
+-                        s["expansion"] = untried[0]
+-                        s["tried"].add(untried[0])
+-                        s["changed"] = True
+-                    else:
+-                        s["status"] = "LOCKED_ABSTAIN"
++                v = _find_validation(s)
++                chosen_index = v.get("chosen_index") if v else None
++                faithful = bool(v and v.get("standardization_faithful") is True)
++                valid_index = (
++                    faithful
++                    and isinstance(chosen_index, int)
++                    and not isinstance(chosen_index, bool)
++                    and 0 <= chosen_index < len(s["std_cache"])
++                )
++                s["std_concept"] = s["std_cache"][chosen_index] if valid_index else None
++                s["status"] = "LOCKED_OK"
++
++            for item in mapping_standardizations:
++                state = next(
++                    s for s in pending
++                    if s["abbreviation"] == item["abbreviation"]
++                    and s["expansion"] == item["expansion"]
++                )
++                item["chosen_concept"] = state["std_concept"]
+ 
+             # 用未弃权的 mapping 重新确定性拼句
+             current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
+@@ -300,6 +299,7 @@ class ABBRService:
+                     "abbreviation": s["abbreviation"],
+                     "expansion": s["expansion"],
+                     "candidates": s["std_cache"],
++                    "chosen_concept": s["std_concept"],
+                 }
+                 for s in locked_ok
+             ],
+diff --git a/backend/services/abbr_verifier.py b/backend/services/abbr_verifier.py
+index 09dc1b4..e502eb7 100644
+--- a/backend/services/abbr_verifier.py
++++ b/backend/services/abbr_verifier.py
+@@ -86,122 +86,101 @@ class ABBVerifier:
+                 "issues": ["invalid_json"]
+             }
+     
+-    def verify_mappings(self,original_text:str,expanded_text:str,mapping_standardizations:list[dict]):
+-        #逐个校验abbreviation->expansion是否合理,同时校验整句扩写是否保持原意
+-        prompt = f"""
+-        You are a medical abbreviation verification assistant.
+-
+-        Task:
+-        Evaluate the abbreviation expansion result from two separate perspectives:
++    def verify_mappings(
++        self,
++        original_text: str,
++        expanded_text: str,
++        mapping_standardizations: list[dict]
++    ):
++        """选择每个扩写最忠实的 SNOMED 标准化概念，或明确弃码。"""
++        indexed_mappings = []
++        for mapping in mapping_standardizations:
++            indexed_mappings.append({
++                "abbreviation": mapping.get("abbreviation"),
++                "expansion": mapping.get("expansion"),
++                "candidates": [
++                    {"index": index, **candidate}
++                    for index, candidate in enumerate(mapping.get("candidates") or [])
++                ],
++            })
+ 
+-        1. Sentence-level validity:
+-        Check whether the expanded clinical text preserves the meaning of the original clinical text.
+-
+-        2. Mapping-level validity:
+-        Check whether each abbreviation-expansion mapping is medically reasonable and supported by context and SNOMED candidates.
+-
+-        Original clinical text:
++        prompt = f"""
++        You are a medical terminology grounding verifier.
++
++        For each abbreviation mapping you are given the expansion and a SHORT LIST of
++        candidate SNOMED concepts retrieved for that expansion. Each candidate has a
++        zero-based index, concept_name, domain_id, and retrieval scores.
++
++        Your job is NOT to re-judge whether the abbreviation expansion is correct.
++        That decision has already been made by the abbreviation coverage stage.
++
++        Your job is to pick which candidate concept is a FAITHFUL standardization of
++        the expansion:
++
++        - chosen_index must be the zero-based index of the candidate whose concept_name
++          means the SAME clinical thing as the expansion.
++        - chosen_index must be null if NONE of the candidates faithfully represents the
++          expansion.
++        - standardization_faithful must be true only when chosen_index points to a
++          faithful candidate.
++        - Judge concept_name against the expansion's clinical meaning. Do not trust the
++          retrieval score by itself.
++        - A finding or condition must not be grounded to a rating scale, measurement,
++          procedure, or other related-but-different concept.
++        - Example: "chest pain" and "Chest pain rating" are not the same clinical thing,
++          so choose null unless another candidate faithfully represents chest pain.
++        - Only choose among the supplied candidates. Never invent a concept.
++        - Return exactly one mapping_validations item for each input mapping, in the
++          same order.
++        - Return raw valid JSON only. Do not use markdown.
++
++        Original clinical text (context only):
+         {original_text}
+ 
+-        Expanded clinical text:
++        Expanded clinical text (context only):
+         {expanded_text}
+ 
+-        Abbreviation mappings with SNOMED candidates:
+-        {json.dumps(mapping_standardizations, ensure_ascii=False, indent=2)}
+-
+-        Important rules:
+-        - Evaluate sentence_validity separately from mapping_validations.
+-        - Do not merge the two judgments.
+-        - The number of mapping_validations must be exactly the same as the number of input abbreviation mappings.
+-        - A sentence can preserve meaning even if one mapping is uncertain.
+-        - A mapping can be medically plausible even if the sentence-level expansion changed wording incorrectly.
+-        - SNOMED candidates are supporting evidence, not final truth.
+-        - Do not invent new abbreviations, diagnoses, symptoms, treatments, or assumptions.
+-        - If uncertain, use low confidence and explain the issue.
+-
+-        Sentence-level evaluation:
+-        1. Compare the original clinical text and expanded clinical text.
+-        2. Check whether the expanded text only expands abbreviations.
+-        3. Check whether negation, uncertainty, severity, timing, and clinical meaning are preserved.
+-        4. If the expanded text adds, removes, or changes medical meaning, mark sentence_validity.is_valid as false.
+-
+-        Mapping-level evaluation for each item:
+-        1. Check whether the abbreviation appears in the original clinical text.
+-        2. Check whether the expansion appears in or is clearly reflected by the expanded clinical text.
+-        3. Check whether the expansion is a plausible medical meaning of the abbreviation in this context.
+-        4. Check whether SNOMED candidates generally support the expanded term.
+-        5. If the abbreviation is ambiguous in this context, lower confidence and add an issue.
+-        6. If SNOMED candidates are weak, unrelated, or missing, set snomed_supported to false and add an issue.
+-
+-        Issue labels:
+-        - "abbreviation_not_found"
+-        - "expansion_not_in_expanded_text"
+-        - "added_information"
+-        - "removed_information"
+-        - "changed_meaning"
+-        - "negation_changed"
+-        - "unsupported_by_snomed"
+-        - "ambiguous_abbreviation"
+-        - "not_medical_abbreviation"
+-        - "not_only_abbreviation_expansion"
+-
+-        Return raw JSON only.
+-        Do not use markdown.
+-        Do not include explanations outside the JSON.
++        Abbreviation expansions and indexed SNOMED candidates:
++        {json.dumps(indexed_mappings, ensure_ascii=False, indent=2)}
+ 
+         Return JSON in exactly this structure:
+         {{
+-        "sentence_validity": {{
+-            "is_valid": true,
+-            "confidence": 0.0,
+-            "reason": "brief explanation",
+-            "issues": []
+-        }},
+-        "mapping_validations": [
++          "mapping_validations": [
+             {{
+-            "abbreviation": "SOB",
+-            "expansion": "shortness of breath",
+-            "context_supported": true,
+-            "snomed_supported": true,
+-            "is_valid": true,
+-            "confidence": 0.0,
+-            "reason": "brief explanation",
+-            "issues": []
++              "abbreviation": "CP",
++              "expansion": "chest pain",
++              "chosen_index": 0,
++              "standardization_faithful": true,
++              "reason": "brief explanation"
+             }}
+-        ]
++          ]
+         }}
+         """
++
+         response = self.llm.invoke(prompt)
+         content = response.content.strip()
+-        #去掉多余的字符串(防御性编程)
+         content = content.replace("```json", "").replace("```", "").strip()
++
+         try:
+-            #json字符串->python字典
+             parsed = json.loads(content)
+-
+-            sentence_validity = parsed.get("sentence_validity",{})
+-            mapping_validations = parsed.get("mapping_validations",[])
+-            #overall_valid = 整句有效 and 有缩写结果 and 所有缩写都有效
+-            overall_valid=(
+-                sentence_validity.get("is_valid") is True
+-                and len(mapping_validations) > 0
+-                and all(
+-                    item.get("is_valid") is True
+-                    for item in mapping_validations
+-                )
+-            )
+-            return{
+-                "sentence_validity":sentence_validity,
+-                "mapping_validations":mapping_validations,
+-                "overall_valid":overall_valid
++            mapping_validations = parsed.get("mapping_validations", [])
++            return {
++                "sentence_validity": {
++                    "is_valid": True,
++                    "confidence": 1.0,
++                    "reason": "Expansion validity is decided upstream by coverage.",
++                    "issues": []
++                },
++                "mapping_validations": mapping_validations,
++                "overall_valid": len(mapping_validations) == len(mapping_standardizations)
+             }
+         except json.JSONDecodeError:
+             return {
+                 "sentence_validity": {
+-                "is_valid": False,
+-                "confidence": 0.0,
+-                "reason": "Verifier did not return valid JSON.",
+-                "issues": ["invalid_json"]
++                    "is_valid": True,
++                    "confidence": 1.0,
++                    "reason": "Expansion validity is decided upstream by coverage.",
++                    "issues": []
+                 },
+                 "mapping_validations": [],
+                 "overall_valid": False,
+@@ -230,4 +209,4 @@ confidence 模型对这个判断的置信度
+ supported_by_snomed snomed是否支持这个expansion
+ reason 简短解释为什么这么判断
+ issues 问题标签列表
+-"""
+\ No newline at end of file
++"""
+```

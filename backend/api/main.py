@@ -168,13 +168,12 @@ def expand_abbreviation_simple(
 
     final_result = result.get("final_result", {}) or {}
 
-    # 从每个 LOCKED_OK mapping 的 SNOMED 检索结果取 top-1 概念,作为标准化编码出口
+    # 只输出 verify 判定为忠实标准化的 SNOMED 概念
     standardized_entities = []
     for ms in final_result.get("mapping_standardizations", []):
-        candidates = ms.get("candidates") or []
-        if not candidates:
+        top = ms.get("chosen_concept")
+        if not top:
             continue
-        top = candidates[0]
         standardized_entities.append({
             "abbreviation": ms.get("abbreviation"),
             "expansion": ms.get("expansion"),
