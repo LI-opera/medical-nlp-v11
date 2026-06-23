@@ -3810,3 +3810,395 @@ index c839c3f..e0e90ef 100644
  #######这个是句子间匹配的相似参数
  扩写是否可信
 ```
+
+
+## 2026-06-23 - Batch 11A: unify state-machine data flow (behavior-neutral)
+
+### Purpose
+
+- Replace the internal two-shape flow in `expand_verify_with_retry` (`candidate_infos` plus `states`) with one per-abbreviation record that flows from retrieval to final output.
+- Add explicit lifecycle `status`: `NOT_EXPANDED` / `PENDING` / `CODED` / `WITHHELD` / `ABSTAIN`.
+- Add explicit `failure` details for future telemetry and error analysis.
+- Keep public behavior unchanged: `success`, `final_result.expanded_text`, `final_result.mappings`, `mapping_standardizations[].chosen_concept`, and `/expand/simple` response shape remain stable.
+
+### Changed files
+
+- `backend/services/abbr_service.py`
+
+### Implementation notes
+
+- Only `expand_verify_with_retry` was replaced; `_get_abbreviation_candidates`, `_reflect_refine_standardization`, retrieval, verifier, API, and benchmark code were not modified.
+- `NOT_EXPANDED` records retain coverage failure evidence but do not enter final `mappings`.
+- `CODED` and `WITHHELD` are the public-output equivalent of the previous `LOCKED_OK` set: both keep the expansion/mapping; only `CODED` has `chosen_concept`.
+- `WITHHELD` means the expansion is retained but SNOMED coding is withheld by verify, matching the post-batch8 behavior.
+- `mapping_states` is now emitted from the unified records and includes `failure` for downstream error analysis.
+
+### Verification
+
+- `.venv\Scripts\python.exe -m compileall backend/services`: passed.
+- `.venv\Scripts\python.exe -c "import sys; sys.path.append('backend'); from services.abbr_service import ABBRService; print('OK')"`: passed, output `OK`.
+- `.venv\Scripts\python.exe backend/evaluation/run_benchmark.py`: passed and behavior stayed identical.
+  - Total Cases: 74.
+  - Correct: 71.
+  - Expansion Accuracy: 0.9595.
+  - Failures remained exactly `coverage_003`, `coverage_005`, `coverage_006`.
+- `.venv\Scripts\python.exe backend/evaluation/run_concept_benchmark.py`: passed.
+  - PASS: 11/11 = 1.0000.
+  - canonical: 10/11 = 0.9091.
+  - SOB: `Dyspnea`.
+  - CAD: `Disorder of coronary artery`.
+- API smoke test with temporary uvicorn, `POST /expand/simple`, payload `{"text":"The patient has SOB and CP."}`: passed.
+  - `success=true`.
+  - `expanded_text="The patient has shortness of breath and chest pain."`.
+  - `mappings` returned SOB and CP.
+  - `standardized_entities` returned SOB=`Dyspnea`, CP=`Chest pain`.
+- `git diff --check -- backend/services/abbr_service.py`: passed; only Windows LF/CRLF warning was emitted.
+
+### Rollback / troubleshooting notes
+
+- If API output shape changes, first check that `resolved = CODED + WITHHELD` still matches the previous `LOCKED_OK` public-output set.
+- If benchmark failures change, first check `_visible(records)`; it should exclude only `ABSTAIN`, not `WITHHELD`.
+- If standardized entities disappear, first check that `mapping_standardizations[].chosen_concept` is still copied from each record's `std_concept`.
+- This batch did not include untracked probe files or prior batch instruction documents.
+
+### git diff (excluding this log file)
+
+```diff
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index 52ab61d..06309e3 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -157,52 +157,60 @@ class ABBRService:
+                 s["std_cache"] = new_cands
+                 s["std_concept"] = refined
+ 
+-    def expand_verify_with_retry(self,text:str,max_retries:int=2):
+-        """
+-        缩写扩展 + 标准化 + 校验 + Reflection 重试。
+-
+-        流程：
+-        1. LLM / Candidate Pipeline 扩写缩写
+-        2. 如果没有任何有效 expansion，直接失败返回，避免 coverage_failed 空转
+-        3. 对扩写文本做 NER + SNOMED 标准化
+-        4. 对 abbreviation -> expansion 做 SNOMED 检索
+-        5. Verifier 校验
+-        6. 如果通过，返回成功
+-        7. 如果不通过，Reflection 修正后重试
++    def expand_verify_with_retry(self, text: str, max_retries: int = 2):
++        """Expand abbreviations, standardize, and verify with a unified data flow.
++        Each abbreviation uses one record from retrieval through final output, with
++        explicit lifecycle status (NOT_EXPANDED/PENDING/CODED/WITHHELD/ABSTAIN)
++        and failure details. The external response shape stays unchanged.
+         """
+         attempts = []
+-
+         candidate_infos = self._get_abbreviation_candidates(text)
++        current_abbreviation_candidates = candidate_infos
++        mapping_support_results = []
++        standardization_result = None
+ 
+-        # —— 建 per-mapping 状态机条目 ——
+-        states = []
++        # Unified per-abbreviation record: one shape from retrieval to output.
++        records = []
+         for info in candidate_infos:
+             best = info.get("best_expansion")
+-            if not best:
+-                continue
+-            states.append({
+-                "abbreviation": info["abbreviation"],
+-                "expansion": best,
++            rec = {
++                "abbreviation": info.get("abbreviation"),
++                "source": info.get("candidate_source"),
++                "candidates": info.get("candidates") or [],
++                "coverage": info.get("coverage") or {},
++                "expansion": best if best else None,
+                 "label": info.get("chosen_label"),
+                 "domain": info.get("chosen_domain"),
+-                "source": info.get("candidate_source"),
+-                "status": "PENDING",
+                 "std_cache": None,
+                 "std_concept": None,
+-            })
++                "status": "PENDING" if best else "NOT_EXPANDED",
++                "failure": None,
++            }
++            if rec["status"] == "NOT_EXPANDED":
++                cov = rec["coverage"]
++                rec["failure"] = {
++                    "type": "ABBR_NOT_EXPANDED",
++                    "stage": "coverage",
++                    "reason": "coverage withheld expansion (not confident enough)",
++                    "evidence": {
++                        "coverage_confidence": cov.get("confidence"),
++                        "coverage_ok": cov.get("coverage_ok"),
++                        "candidates_seen": [c.get("expansion") for c in rec["candidates"]],
++                    },
++                }
++            records.append(rec)
+ 
+-        current_abbreviation_candidates = candidate_infos
+-        mapping_support_results = []
+-        standardization_result = None
++        def _expanded(recs):
++            return [r for r in recs if r["expansion"]]
+ 
+-        def _visible(state_list):
+-            # 进入句子/检索的 mapping:未弃权的(LOCKED_OK + PENDING)
+-            return [s for s in state_list if s["status"] != "LOCKED_ABSTAIN"]
++        def _visible(recs):
++            # Visible in text/retrieval: expanded and not abstained.
++            return [r for r in recs if r["expansion"] and r["status"] != "ABSTAIN"]
+ 
+-        current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
++        current_expanded_text = self._build_expanded_text_deterministic(text, _visible(records))
+ 
+-        # —— 早停:召回阶段没选出任何扩写 ——
+-        if not states:
++        # Early stop: no abbreviation produced an expansion (coverage_failed).
++        if not _expanded(records):
+             attempt_result = {
+                 "attempt": 1,
+                 "expanded_text": current_expanded_text,
+@@ -221,7 +229,12 @@ class ABBRService:
+                     "overall_valid": False
+                 },
+                 "stop_reason": "coverage_failed_no_valid_expansion",
+-                "mapping_support_results": mapping_support_results
++                "mapping_support_results": mapping_support_results,
++                "mapping_states": [
++                    {"abbreviation": r["abbreviation"], "expansion": r["expansion"],
++                     "status": r["status"], "failure": r["failure"]}
++                    for r in records
++                ],
+             }
+             attempts.append(attempt_result)
+             return {
+@@ -230,105 +243,94 @@ class ABBRService:
+                 "success": False,
+                 "attempts": attempts,
+                 "final_result": attempt_result,
+-                "reason": "No valid abbreviation expansion found. Candidate coverage failed."
++                "reason": "No valid abbreviation expansion found. Candidate coverage failed.",
+             }
+ 
+-        # —— 重试循环:per-mapping 失败隔离 + 增量重算 ——
++        # Retry loop: per-mapping failure isolation.
+         for attempt_index in range(max_retries + 1):
+-            pending = [s for s in states if s["status"] == "PENDING"]
++            pending = [r for r in records if r["status"] == "PENDING"]
+             if not pending:
+                 break
+ 
+-            # 每个 PENDING mapping 检索一次 SNOMED 候选
+-            for s in pending:
++            # Retrieve SNOMED candidates for each PENDING record.
++            for r in pending:
+                 docs = self.retriever.retrieve(
+-                    query=s["expansion"],
+-                    top_k=10,
+-                    domain_filter=None,
+-                    domain_boost=s.get("domain"),
+-                    score_threshold=0.6
++                    query=r["expansion"], top_k=10, domain_filter=None,
++                    domain_boost=r.get("domain"), score_threshold=0.6,
+                 )
+-                cand = []
+-                for doc in docs[:10]:
+-                    md = doc["metadata"]
+-                    cand.append({
+-                        "concept_id": md["concept_id"],
+-                        "concept_name": md["concept_name"],
+-                        "domain_id": md["domain_id"],
+-                        "concept_code": md["concept_code"],
+-                        "score": md["score"],
+-                        "rerank_score": md.get("rerank_score"),
+-                    })
+-                s["std_cache"] = cand
++                r["std_cache"] = [
++                    {
++                        "concept_id": d["metadata"]["concept_id"],
++                        "concept_name": d["metadata"]["concept_name"],
++                        "domain_id": d["metadata"]["domain_id"],
++                        "concept_code": d["metadata"]["concept_code"],
++                        "score": d["metadata"]["score"],
++                        "rerank_score": d["metadata"].get("rerank_score"),
++                    }
++                    for d in docs[:10]
++                ]
+ 
+-            # 只对 PENDING 做 verify(LOCKED_OK 冻结不复验)
+             mapping_standardizations = [
+-                {
+-                    "abbreviation": s["abbreviation"],
+-                    "expansion": s["expansion"],
+-                    "candidates": s["std_cache"],
+-                }
+-                for s in pending
++                {"abbreviation": r["abbreviation"], "expansion": r["expansion"], "candidates": r["std_cache"]}
++                for r in pending
+             ]
+             verification = self.verifier.verify_mappings(
+-                original_text=text,
+-                expanded_text=current_expanded_text,
++                original_text=text, expanded_text=current_expanded_text,
+                 mapping_standardizations=mapping_standardizations,
+             )
+             validations = verification.get("mapping_validations", [])
+ 
+-            def _find_validation(state):
++            def _find_validation(rec):
+                 for v in validations:
+-                    if (
+-                        v.get("abbreviation") == state["abbreviation"]
+-                        and v.get("expansion") == state["expansion"]
+-                    ):
++                    if v.get("abbreviation") == rec["abbreviation"] and v.get("expansion") == rec["expansion"]:
+                         return v
+                 return None
+ 
+-            # 扩写由 coverage 决定；verify 只选择忠实 SNOMED 概念或弃码
+-            for s in pending:
+-                v = _find_validation(s)
++            # Coverage decides expansion; verify only chooses/withholds SNOMED coding.
++            for r in pending:
++                v = _find_validation(r)
+                 chosen_index = v.get("chosen_index") if v else None
+                 faithful = bool(v and v.get("standardization_faithful") is True)
+                 valid_index = (
+-                    faithful
+-                    and isinstance(chosen_index, int)
+-                    and not isinstance(chosen_index, bool)
+-                    and 0 <= chosen_index < len(s["std_cache"])
++                    faithful and isinstance(chosen_index, int) and not isinstance(chosen_index, bool)
++                    and 0 <= chosen_index < len(r["std_cache"])
+                 )
+-                s["std_concept"] = s["std_cache"][chosen_index] if valid_index else None
+-                s["status"] = "LOCKED_OK"
++                r["std_concept"] = r["std_cache"][chosen_index] if valid_index else None
++                if r["std_concept"]:
++                    r["status"] = "CODED"
++                    r["failure"] = None
++                else:
++                    r["status"] = "WITHHELD"
++                    r["failure"] = {
++                        "type": "CODE_WITHHELD", "stage": "standardization",
++                        "reason": (v.get("reason") if v else None) or "no faithful SNOMED concept among retrieved candidates",
++                        "evidence": {"retrieved_top": [c.get("concept_name") for c in (r["std_cache"] or [])[:5]]},
++                    }
+ 
+-            # batch10: 标准化反思精炼。只对本轮 pending 触发;非精确同名/弃码才会换词重检索。
+-            for s in pending:
+-                self._reflect_refine_standardization(s, text, current_expanded_text)
++            # batch10 standardization reflection may rescue WITHHELD into CODED.
++            for r in pending:
++                self._reflect_refine_standardization(r, text, current_expanded_text)
++                if r.get("std_concept") and r["status"] == "WITHHELD":
++                    r["status"] = "CODED"
++                    r["failure"] = None
+ 
+             for item in mapping_standardizations:
+-                state = next(
+-                    s for s in pending
+-                    if s["abbreviation"] == item["abbreviation"]
+-                    and s["expansion"] == item["expansion"]
++                rec = next(
++                    r for r in pending
++                    if r["abbreviation"] == item["abbreviation"] and r["expansion"] == item["expansion"]
+                 )
+-                item["chosen_concept"] = state["std_concept"]
++                item["chosen_concept"] = rec["std_concept"]
+ 
+-            # 用未弃权的 mapping 重新确定性拼句
+-            current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
++            current_expanded_text = self._build_expanded_text_deterministic(text, _visible(records))
+ 
+-            # 本轮留痕
+             attempts.append({
+                 "attempt": attempt_index + 1,
+                 "expanded_text": current_expanded_text,
+                 "abbreviation_candidates": current_abbreviation_candidates,
+                 "mappings": [
+-                    {
+-                        "abbreviation": s["abbreviation"],
+-                        "expansion": s["expansion"],
+-                        "label": s["label"],
+-                        "source": s["source"],
+-                        "status": s["status"],
+-                    }
+-                    for s in states
++                    {"abbreviation": r["abbreviation"], "expansion": r["expansion"],
++                     "label": r["label"], "source": r["source"], "status": r["status"]}
++                    for r in records
+                 ],
+                 "standardization": standardization_result,
+                 "mapping_standardizations": mapping_standardizations,
+@@ -336,24 +338,26 @@ class ABBRService:
+                 "mapping_support_results": mapping_support_results,
+             })
+ 
+-        # —— 循环结束:到达兜底次数仍 PENDING 的 → 安全弃权 ——
+-        for s in states:
+-            if s["status"] == "PENDING":
+-                s["status"] = "LOCKED_ABSTAIN"
++        # Loop end: any still-PENDING record abstains safely.
++        for r in records:
++            if r["status"] == "PENDING":
++                r["status"] = "ABSTAIN"
++                r["failure"] = {
++                    "type": "EXPANSION_ABSTAIN", "stage": "coverage",
++                    "reason": "expansion candidates exhausted without a lock", "evidence": {},
++                }
+ 
+-        # —— 终态出口 ——
+-        current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
+-        locked_ok = [s for s in states if s["status"] == "LOCKED_OK"]
++        # Final output: preserve the previous public response fields.
++        current_expanded_text = self._build_expanded_text_deterministic(text, _visible(records))
++        resolved = [r for r in records if r["status"] in ("CODED", "WITHHELD")]
+         final_mappings = [
+-            {
+-                "abbreviation": s["abbreviation"],
+-                "expansion": s["expansion"],
+-                "label": s["label"],
+-                "source": s["source"],
+-            }
+-            for s in locked_ok
++            {"abbreviation": r["abbreviation"], "expansion": r["expansion"],
++             "label": r["label"], "source": r["source"]}
++            for r in resolved
+         ]
+-        success = len(states) > 0 and all(s["status"] == "LOCKED_OK" for s in states)
++        success = len(_expanded(records)) > 0 and all(
++            r["status"] in ("CODED", "WITHHELD") for r in _expanded(records)
++        )
+ 
+         final_result = {
+             "attempt": len(attempts),
+@@ -362,19 +366,16 @@ class ABBRService:
+             "mappings": final_mappings,
+             "standardization": standardization_result,
+             "mapping_standardizations": [
+-                {
+-                    "abbreviation": s["abbreviation"],
+-                    "expansion": s["expansion"],
+-                    "candidates": s["std_cache"],
+-                    "chosen_concept": s["std_concept"],
+-                }
+-                for s in locked_ok
++                {"abbreviation": r["abbreviation"], "expansion": r["expansion"],
++                 "candidates": r["std_cache"], "chosen_concept": r["std_concept"]}
++                for r in resolved
+             ],
+             "verification": attempts[-1]["verification"] if attempts else None,
+             "mapping_support_results": mapping_support_results,
+             "mapping_states": [
+-                {"abbreviation": s["abbreviation"], "expansion": s["expansion"], "status": s["status"]}
+-                for s in states
++                {"abbreviation": r["abbreviation"], "expansion": r["expansion"],
++                 "status": r["status"], "failure": r["failure"]}
++                for r in records
+             ],
+         }
+```
