@@ -114,21 +114,41 @@ class ABBVerifier:
         Your job is NOT to re-judge whether the abbreviation expansion is correct.
         That decision has already been made by the abbreviation coverage stage.
 
-        Your job is to pick which candidate concept is a FAITHFUL standardization of
-        the expansion:
+        Your job is to pick the BEST FAITHFUL standardization of the expansion among
+        the candidates, and to abstain ONLY when none is faithful.
 
-        - chosen_index must be the zero-based index of the candidate whose concept_name
-          means the SAME clinical thing as the expansion.
-        - chosen_index must be null if NONE of the candidates faithfully represents the
-          expansion.
+        A candidate is FAITHFUL when its concept_name denotes the SAME clinical entity
+        as the expansion. This includes:
+        - an exact clinical synonym of the expansion (most preferred); and
+        - the SAME disease/finding named more GENERALLY, i.e. a faithful PARENT term,
+          when no exact synonym is present. For example, for "coronary artery disease"
+          the candidates "Disorder of coronary artery" and "Coronary arteriosclerosis"
+          are faithful; for "hypertension" the candidate "Hypertensive disorder" is
+          faithful.
+
+        A candidate is NOT faithful (do not choose it; if only such candidates exist,
+        abstain):
+        - it ADDS a qualifier the expansion does not state - a specific subtype, cause,
+          stage, acuity, laterality or site (e.g. "... due to diabetes",
+          "type 1 stage 2", "acute ...", "of inferior wall") - UNLESS the expansion
+          itself carries that qualifier; or
+        - it is a related-but-different concept: a rating scale, measurement, procedure,
+          device, service, monitoring / education / administration, risk level, or
+          family history. For example, "chest pain" and "Chest pain rating" are not the
+          same clinical thing.
+
+        How to choose:
+        - chosen_index = the zero-based index of the BEST faithful candidate. Among
+          faithful candidates, prefer the MOST SPECIFIC one that does NOT add information
+          absent from the expansion (prefer the disease itself over a broad parent, and
+          over the disease's subtypes or related services).
+        - Do NOT abstain just because no candidate is a word-for-word match: a faithful
+          synonym or a faithful parent still counts as faithful.
+        - chosen_index = null ONLY when no candidate denotes the same clinical entity.
         - standardization_faithful must be true only when chosen_index points to a
           faithful candidate.
         - Judge concept_name against the expansion's clinical meaning. Do not trust the
           retrieval score by itself.
-        - A finding or condition must not be grounded to a rating scale, measurement,
-          procedure, or other related-but-different concept.
-        - Example: "chest pain" and "Chest pain rating" are not the same clinical thing,
-          so choose null unless another candidate faithfully represents chest pain.
         - Only choose among the supplied candidates. Never invent a concept.
         - Return exactly one mapping_validations item for each input mapping, in the
           same order.

@@ -2957,3 +2957,314 @@ index 09dc1b4..e502eb7 100644
 \ No newline at end of file
 +"""
 ```
+
+## 2026-06-23 - 批次9：收敛 verify 标准化忠实度判定标准，并加入 concept 层验收尺子
+
+### 改动目的
+
+- 将 `verify_mappings` 的标准化判定从“只接受同义/近乎同名概念，否则弃码”收敛为“选择最忠实的 SNOMED 标准化概念；没有精确同义词时允许忠实父概念；只有完全无忠实候选时才弃码”。
+- 修复 CAD 场景中过度弃码的问题：`coronary artery disease` 在 top-10 中存在 `Disorder of coronary artery` 时应视为忠实可接受。
+- 新增 concept 层 benchmark，专门量化批次8/9 verify 在“给定正确扩写后的 SNOMED 概念选择/弃码”质量，和主 benchmark 的扩写正确率分层验收。
+
+### 涉及文件
+
+- `backend/services/abbr_verifier.py`
+- `backend/evaluation/concept_benchmark_cases.py`
+- `backend/evaluation/run_concept_benchmark.py`
+
+### 实现要点
+
+- 仅替换 `verify_mappings` prompt 中的判定标准段落，不改输入 JSON、返回结构、解析逻辑、检索、rerank 或状态机。
+- prompt 明确：
+  - 忠实候选包括精确临床同义词，以及在没有精确同义词时不额外添加信息的忠实父概念；
+  - 不忠实候选包括额外添加 subtype/cause/stage/acuity/laterality/site 等限定的信息，或 rating scale、measurement、procedure、service、family history 等相关但不同的概念；
+  - 在忠实候选中选择“不添加原扩写未声明信息的最具体概念”，只有没有任何候选代表同一临床实体时才 `chosen_index=null`。
+- 新增 11 条 confirmed concept gold：CP、DM、MI、PNA、CHF、HTN、SOB、CAD、ASTHMA、AFIB、RA_room_air。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/services backend/evaluation`：通过。
+- `.venv\Scripts\python.exe -c "import sys; sys.path.append('backend'); from services.abbr_verifier import ABBVerifier; print('OK')"`：通过，输出 `OK`。
+- `.venv\Scripts\python.exe backend/evaluation/run_concept_benchmark.py`：通过。
+  - PASS：11/11 = 1.0000。
+  - canonical：9/11 = 0.8182。
+  - CAD 已命中 `Disorder of coronary artery`，faithful=True，完成 FAIL -> PASS。
+- `.venv\Scripts\python.exe backend/evaluation/run_benchmark.py`：通过且持平。
+  - Total Cases：74。
+  - Correct：71。
+  - Expansion Accuracy：0.9595。
+  - 失败仍为原有 low_context_abbreviation：`coverage_003`、`coverage_005`、`coverage_006`。
+- `git diff --check -- backend/services/abbr_verifier.py backend/evaluation/concept_benchmark_cases.py backend/evaluation/run_concept_benchmark.py`：通过；仅提示 Windows 下 LF 将来可能被 Git 转为 CRLF。
+
+### 回滚/排查提示
+
+- 若后续发现 verify 过度接收“父概念”，优先检查 prompt 中 faithful parent 与 “does NOT add information absent from the expansion” 两条规则的相互约束。
+- 若主 benchmark 分数低于 0.9595，说明标准化 prompt 可能间接影响了扩写链路，应先回看 verify 是否错误拒绝/接收导致后续实体输出异常。
+- 本批次没有纳入未跟踪的 `backend/probe_reflection_requery.py` 和历史批次指令文档。
+
+### git diff（排除本日志文件自身）
+
+```diff
+diff --git a/backend/evaluation/concept_benchmark_cases.py b/backend/evaluation/concept_benchmark_cases.py
+new file mode 100644
+index 0000000..72568e1
+--- /dev/null
++++ b/backend/evaluation/concept_benchmark_cases.py
+@@ -0,0 +1,79 @@
++"""
++Concept 层 benchmark gold(标准化层评测)
++================================================================
++动机:
++  现有 benchmark 只判 (缩写, 扩写),【测不到】verify 自批次8 起的全部标准化工作
++  (在检索候选里选忠实 SNOMED 概念 / 弃码)。本文件补上 concept 层的尺子:
++  给定【正确扩写】,标准化这一步该选哪个概念、还是该弃码。
++
++口径(诚实):
++  - 用【概念名】判等,不用 concept_id(gold 的 id 取决于具体 Athena 下载;概念名稳定可读)。
++    runner 会打印实际选中的名字,库里 FSN 略有出入就照实际名补进 accept。
++  - prefer = 最规范的概念;accept = 其它也忠实可接受的写法。
++    PASS = 选中在 {prefer}+accept 里;canonical = 选中 == prefer。
++    PASS 看忠实度,canonical 看规范度;两者差 = reflection/改写能改善的余量
++    (实测:SOB 'Difficulty breathing' -> 'Dyspnea')。
++  - confirmed=True = 已用探针/诊断/首跑核过的硬 gold(计入准确率)。
++
++测什么:给定正确扩写,标准化选概念的忠实度+规范度+该弃码时弃码。
++不测:扩写消歧(那是现有 benchmark + coverage 的活)。两层合起来覆盖项目两块。
++"""
++
++CONCEPT_BENCHMARK_CASES = [
++    {
++        "label": "CP", "expansion": "chest pain", "expect": "concept",
++        "prefer": "Chest pain", "accept": [], "confirmed": True,
++        "note": "top0 0.99",
++    },
++    {
++        "label": "DM", "expansion": "diabetes mellitus", "expect": "concept",
++        "prefer": "Diabetes mellitus", "accept": [], "confirmed": True,
++        "note": "top0 0.935",
++    },
++    {
++        "label": "MI", "expansion": "myocardial infarction", "expect": "concept",
++        "prefer": "Myocardial infarction", "accept": [], "confirmed": True,
++        "note": "top0 0.957",
++    },
++    {
++        "label": "PNA", "expansion": "pneumonia", "expect": "concept",
++        "prefer": "Pneumonia", "accept": [], "confirmed": True,
++        "note": "top0 0.785",
++    },
++    {
++        "label": "CHF", "expansion": "congestive heart failure", "expect": "concept",
++        "prefer": "Congestive heart failure", "accept": [], "confirmed": True,
++        "note": "top0 0.924",
++    },
++    {
++        "label": "HTN", "expansion": "hypertension", "expect": "concept",
++        "prefer": "Hypertensive disorder", "accept": ["Essential hypertension"], "confirmed": True,
++        "note": "通用概念排第9,靠 top-3->top-10 窗口才够到",
++    },
++    {
++        "label": "SOB", "expansion": "shortness of breath", "expect": "concept",
++        "prefer": "Dyspnea", "accept": ["Difficulty breathing"], "confirmed": True,
++        "note": "主链路只够到 'Difficulty breathing'(accept);'Dyspnea' 要改写才捞到=batch9 目标",
++    },
++    {
++        "label": "CAD", "expansion": "coronary artery disease", "expect": "concept",
++        "prefer": "Coronary arteriosclerosis",
++        "accept": ["Disorder of coronary artery", "Ischemic heart disease"], "confirmed": True,
++        "note": "边界:top-10 下 verify 弃码;规范概念要改写才捞到",
++    },
++    {
++        "label": "ASTHMA", "expansion": "asthma", "expect": "concept",
++        "prefer": "Asthma", "accept": [], "confirmed": True,
++        "note": "首跑确认 canonical",
++    },
++    {
++        "label": "AFIB", "expansion": "atrial fibrillation", "expect": "concept",
++        "prefer": "Atrial fibrillation", "accept": [], "confirmed": True,
++        "note": "首跑确认 canonical",
++    },
++    {
++        "label": "RA_room_air", "expansion": "room air", "expect": "concept",
++        "prefer": "Breathing room air", "accept": [], "confirmed": True,
++        "note": "首跑 verify 选 'Breathing room air'(忠实),原弃码假设错;本集暂无真负例待补",
++    },
++]
+diff --git a/backend/evaluation/run_concept_benchmark.py b/backend/evaluation/run_concept_benchmark.py
+new file mode 100644
+index 0000000..4e685b5
+--- /dev/null
++++ b/backend/evaluation/run_concept_benchmark.py
+@@ -0,0 +1,114 @@
++"""
++Concept 层 benchmark runner(标准化层评测)
++================================================================
++对每条 gold:给定【正确扩写】→ 检索 top-10 → verify 选概念,
++判选中的概念名是否 ∈ {prefer}∪accept(或该弃码时是否弃码)。
++
++复刻的是主链路标准化那一步(状态机 docs[:10] → verify chosen_index),
++所以测到的就是批次8 verify 实际产出、以及 batch9 会改动的那一层。
++注:这里直接喂【正确扩写】、绕过 coverage——本层只测标准化,不测消歧。
++
++跑法:python backend/evaluation/run_concept_benchmark.py
++需要 Milvus + DeepSeek key(和 benchmark 同环境)。
++"""
++import sys
++from pathlib import Path
++
++BACKEND_DIR = Path(__file__).resolve().parents[1]
++sys.path.append(str(BACKEND_DIR))
++
++from evaluation.concept_benchmark_cases import CONCEPT_BENCHMARK_CASES
++from services.medical_retriever import MedicalRetriever
++from services.abbr_verifier import ABBVerifier
++
++TOP_K = 10            # 与主链路状态机 docs[:10] 一致
++SCORE_TH = 0.6
++
++
++def _norm(s):
++    return s.strip().lower() if isinstance(s, str) else s
++
++
++def retrieve_top(retriever, query):
++    docs = retriever.retrieve(query=query, top_k=TOP_K, domain_filter=None, score_threshold=SCORE_TH)
++    return [d["metadata"] for d in docs]
++
++
++def verify_pick(verifier, label, expansion, candidates):
++    v = verifier.verify_mappings(
++        original_text=f"The patient has {expansion}.",
++        expanded_text=f"The patient has {expansion}.",
++        mapping_standardizations=[{
++            "abbreviation": label, "expansion": expansion, "candidates": candidates,
++        }],
++    )
++    mvs = v.get("mapping_validations", [])
++    mv = mvs[0] if mvs else {}
++    ci = mv.get("chosen_index")
++    name = candidates[ci]["concept_name"] if (ci is not None and 0 <= ci < len(candidates)) else None
++    return name, mv.get("standardization_faithful"), mv.get("reason")
++
++
++def judge(case, chosen_name):
++    """返回 (passed, canonical_hit, verdict_str)。"""
++    if case["expect"] == "abstain":
++        passed = chosen_name is None
++        return passed, False, ("弃码 OK" if passed else f"该弃码却选了 {chosen_name!r}")
++    # expect concept
++    accept_norm = {_norm(case["prefer"])} | {_norm(a) for a in case.get("accept", [])}
++    if chosen_name is None:
++        return False, False, "该给码却弃码"
++    if _norm(chosen_name) not in accept_norm:
++        return False, False, f"选了 {chosen_name!r}(不在 accept 内)"
++    canonical = _norm(chosen_name) == _norm(case["prefer"])
++    return True, canonical, ("canonical(最规范)" if canonical else f"acceptable(非最规范)")
++
++
++def show(rows, title):
++    print("\n" + "=" * 72)
++    print(title)
++    print("=" * 72)
++    for case, chosen, faithful, reason, passed, canonical, verdict in rows:
++        flag = "PASS" if passed else "FAIL"
++        exp_str = "弃码" if case["expect"] == "abstain" else f"prefer={case['prefer']!r}"
++        print(f"[{flag}] {case['label']:<12} {case['expansion']!r}")
++        print(f"        期望: {exp_str}   →  {verdict}")
++        print(f"        选中: {chosen!r}  faithful={faithful}")
++        if (not passed) or (not canonical):
++            print(f"        reason: {reason}")
++
++
++def main():
++    retriever = MedicalRetriever()
++    verifier = ABBVerifier()
++
++    conf_total = conf_pass = conf_canon = 0
++    rows_conf, rows_unconf = [], []
++
++    for case in CONCEPT_BENCHMARK_CASES:
++        cands = retrieve_top(retriever, case["expansion"])
++        chosen, faithful, reason = verify_pick(verifier, case["label"], case["expansion"], cands)
++        passed, canonical, verdict = judge(case, chosen)
++        row = (case, chosen, faithful, reason, passed, canonical, verdict)
++        if case.get("confirmed"):
++            rows_conf.append(row)
++            conf_total += 1
++            conf_pass += int(passed)
++            conf_canon += int(canonical)
++        else:
++            rows_unconf.append(row)
++
++    show(rows_conf, "① 硬 gold(计入准确率)")
++    show(rows_unconf, "② 待锁定假设(只打印,首跑后据实补/改 gold)")
++
++    print("\n" + "=" * 72)
++    print("==== Concept-层 标准化准确率(仅 confirmed)====")
++    if conf_total:
++        print(f"  PASS(忠实命中)   : {conf_pass}/{conf_total} = {conf_pass / conf_total:.4f}")
++        print(f"  canonical(最规范) : {conf_canon}/{conf_total} = {conf_canon / conf_total:.4f}")
++        print(f"  可升级空间(acceptable 但非 canonical,batch9 目标): {conf_pass - conf_canon}")
++    print("  注:PASS 看忠实度,canonical 看规范度;两者差 = reflection/改写能改善的余量。")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/services/abbr_verifier.py b/backend/services/abbr_verifier.py
+index e502eb7..c839c3f 100644
+--- a/backend/services/abbr_verifier.py
++++ b/backend/services/abbr_verifier.py
+@@ -114,21 +114,41 @@ class ABBVerifier:
+         Your job is NOT to re-judge whether the abbreviation expansion is correct.
+         That decision has already been made by the abbreviation coverage stage.
+ 
+-        Your job is to pick which candidate concept is a FAITHFUL standardization of
+-        the expansion:
+-
+-        - chosen_index must be the zero-based index of the candidate whose concept_name
+-          means the SAME clinical thing as the expansion.
+-        - chosen_index must be null if NONE of the candidates faithfully represents the
+-          expansion.
++        Your job is to pick the BEST FAITHFUL standardization of the expansion among
++        the candidates, and to abstain ONLY when none is faithful.
++
++        A candidate is FAITHFUL when its concept_name denotes the SAME clinical entity
++        as the expansion. This includes:
++        - an exact clinical synonym of the expansion (most preferred); and
++        - the SAME disease/finding named more GENERALLY, i.e. a faithful PARENT term,
++          when no exact synonym is present. For example, for "coronary artery disease"
++          the candidates "Disorder of coronary artery" and "Coronary arteriosclerosis"
++          are faithful; for "hypertension" the candidate "Hypertensive disorder" is
++          faithful.
++
++        A candidate is NOT faithful (do not choose it; if only such candidates exist,
++        abstain):
++        - it ADDS a qualifier the expansion does not state - a specific subtype, cause,
++          stage, acuity, laterality or site (e.g. "... due to diabetes",
++          "type 1 stage 2", "acute ...", "of inferior wall") - UNLESS the expansion
++          itself carries that qualifier; or
++        - it is a related-but-different concept: a rating scale, measurement, procedure,
++          device, service, monitoring / education / administration, risk level, or
++          family history. For example, "chest pain" and "Chest pain rating" are not the
++          same clinical thing.
++
++        How to choose:
++        - chosen_index = the zero-based index of the BEST faithful candidate. Among
++          faithful candidates, prefer the MOST SPECIFIC one that does NOT add information
++          absent from the expansion (prefer the disease itself over a broad parent, and
++          over the disease's subtypes or related services).
++        - Do NOT abstain just because no candidate is a word-for-word match: a faithful
++          synonym or a faithful parent still counts as faithful.
++        - chosen_index = null ONLY when no candidate denotes the same clinical entity.
+         - standardization_faithful must be true only when chosen_index points to a
+           faithful candidate.
+         - Judge concept_name against the expansion's clinical meaning. Do not trust the
+           retrieval score by itself.
+-        - A finding or condition must not be grounded to a rating scale, measurement,
+-          procedure, or other related-but-different concept.
+-        - Example: "chest pain" and "Chest pain rating" are not the same clinical thing,
+-          so choose null unless another candidate faithfully represents chest pain.
+         - Only choose among the supplied candidates. Never invent a concept.
+         - Return exactly one mapping_validations item for each input mapping, in the
+           same order.
+```
