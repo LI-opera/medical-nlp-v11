@@ -2958,6 +2958,315 @@ index 09dc1b4..e502eb7 100644
 +"""
 ```
 
+## 2026-06-23 - Batch 11B: unified error-analysis store
+
+### Purpose
+
+- Add one JSONL error store for both runtime known-unknowns and benchmark gold mismatches.
+- Runtime known-unknowns come from `record.failure` emitted by the batch11A unified state-machine records.
+- Benchmark unknown-unknowns are recorded as `GOLD_MISMATCH` when predicted mappings differ from gold.
+- All telemetry collection is fail-safe sidecar logic and must not affect expansion scoring or API behavior.
+
+### Changed files
+
+- `.gitignore`
+- `backend/services/error_collector.py`
+- `backend/services/abbr_service.py`
+- `backend/evaluation/run_benchmark.py`
+- `backend/evaluation/run_concept_benchmark.py`
+- `backend/evaluation/analyze_errors.py`
+
+### Implementation notes
+
+- Added `collect_unresolved(...)` for runtime failures such as `CODE_WITHHELD`, `ABBR_NOT_EXPANDED`, and `COVERAGE_FAILED`.
+- Added `collect_gold_mismatch(...)` for benchmark-side confident wrong answers.
+- Hooked `collect_unresolved(...)` before both returns in `expand_verify_with_retry`.
+- Hooked main benchmark to write `GOLD_MISMATCH` only after `final_correct` is computed false; scoring logic itself is unchanged.
+- Hooked concept benchmark symmetrically for future standardization gold mismatches; current concept benchmark still passes and produces no such rows.
+- Added `backend/evaluation/analyze_errors.py` to aggregate the unified JSONL by failure type, abbreviation, expansion, source, and stage.
+- Added `backend/logs/` to `.gitignore` so runtime JSONL logs are not committed.
+
+### Verification
+
+- `.venv\Scripts\python.exe -m compileall backend/services backend/evaluation`: passed.
+- `.venv\Scripts\python.exe -c "import sys; sys.path.append('backend'); from services.error_collector import collect_unresolved, collect_gold_mismatch; from services.abbr_service import ABBRService; print('OK')"`: passed, output `OK`.
+- `.venv\Scripts\python.exe backend/evaluation/run_benchmark.py`: passed and behavior stayed identical.
+  - Total Cases: 74.
+  - Correct: 71.
+  - Expansion Accuracy: 0.9595.
+  - Failures remained exactly `coverage_003`, `coverage_005`, `coverage_006`.
+- `backend/logs/unresolved_cases.jsonl`: generated 22 rows after benchmark.
+  - `GOLD_MISMATCH`: 3 rows.
+  - Runtime known-unknowns also present: `CODE_WITHHELD`, `ABBR_NOT_EXPANDED`, `COVERAGE_FAILED`.
+- `.venv\Scripts\python.exe backend/evaluation/analyze_errors.py`: passed.
+  - Aggregation showed `CODE_WITHHELD=8`, `ABBR_NOT_EXPANDED=7`, `COVERAGE_FAILED=4`, `GOLD_MISMATCH=3`.
+- `git diff --check` on touched source files: passed; only Windows LF/CRLF warnings were emitted.
+
+### Rollback / troubleshooting notes
+
+- If benchmark score changes, first inspect `run_benchmark.py`; the only intended change is sidecar logging after `final_correct` is computed.
+- If API/main pipeline errors appear, disable the two `collect_unresolved(...)` calls in `abbr_service.py`; each is already wrapped in `try/except`.
+- If error logs grow too large or duplicate across repeated benchmark runs, delete `backend/logs/unresolved_cases.jsonl`; the directory is ignored by Git.
+- This batch did not commit generated `backend/logs/` data and did not include untracked probe files or batch instruction documents.
+
+### git diff (excluding this log file)
+
+```diff
+diff --git a/.gitignore b/.gitignore
+index e143517..4fa3181 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -7,5 +7,6 @@ __pycache__/
+ .DS_Store
+ .vscode/
+ backend/evaluation/benchmark_results.json
++backend/logs/
+ backend/data/snomed_clinical.csv
+ snomed_clinical.csv
+diff --git a/backend/evaluation/analyze_errors.py b/backend/evaluation/analyze_errors.py
+new file mode 100644
+index 0000000..22427e8
+--- /dev/null
++++ b/backend/evaluation/analyze_errors.py
+@@ -0,0 +1,64 @@
++"""
++Analyze the unified error JSONL store.
++
++Run `python backend/evaluation/run_benchmark.py` first so runtime failures and
++gold mismatches can be collected into backend/logs/unresolved_cases.jsonl.
++"""
++import json
++from collections import Counter
++from pathlib import Path
++
++
++LOG = Path(__file__).resolve().parents[1] / "logs" / "unresolved_cases.jsonl"
++
++
++def main():
++    if not LOG.exists():
++        print(f"No error log found: {LOG}")
++        print("Run `python backend/evaluation/run_benchmark.py` first.")
++        return
++
++    recs = [json.loads(x) for x in LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
++    print(f"Total error records: {len(recs)}\n")
++
++    def dist(title, counter, n=10):
++        print(title)
++        for k, c in counter.most_common(n):
++            print(f"  {c:>4}  {k}")
++        print()
++
++    dist(
++        "By failure_type (runtime known-unknowns + GOLD_MISMATCH):",
++        Counter(r["failure_type"] for r in recs),
++    )
++    dist(
++        "Top abbreviations:",
++        Counter(r.get("abbreviation") for r in recs if r.get("abbreviation")),
++    )
++    dist(
++        "Top withheld expansions (CODE_WITHHELD):",
++        Counter(
++            r.get("expansion")
++            for r in recs
++            if r["failure_type"] == "CODE_WITHHELD" and r.get("expansion")
++        ),
++    )
++    dist("By source:", Counter(r.get("source") for r in recs))
++    dist("By stage:", Counter(r.get("stage") for r in recs))
++
++    print("One sample per failure_type:")
++    seen = set()
++    for r in recs:
++        failure_type = r["failure_type"]
++        if failure_type in seen:
++            continue
++        seen.add(failure_type)
++        print(
++            f"  [{failure_type}] abbr={r.get('abbreviation')} "
++            f"exp={r.get('expansion')} src={r.get('source')}"
++        )
++        print(f"        reason={r.get('reason')}  evidence={r.get('evidence')}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/evaluation/run_benchmark.py b/backend/evaluation/run_benchmark.py
+index cf66ff9..41aaf13 100644
+--- a/backend/evaluation/run_benchmark.py
++++ b/backend/evaluation/run_benchmark.py
+@@ -106,6 +106,19 @@ def run_benchmark():
+         )
+         final_correct = is_correct and text_check["correct"]
+ 
++        if not final_correct:
++            try:
++                from services.error_collector import collect_gold_mismatch
++                collect_gold_mismatch(
++                    text=case["text"],
++                    stage="expansion",
++                    source="benchmark:main",
++                    expected=case["expected_mappings"],
++                    predicted=predicted_mappings,
++                )
++            except Exception:
++                pass
++
+         if final_correct:
+             correct += 1
+ 
+diff --git a/backend/evaluation/run_concept_benchmark.py b/backend/evaluation/run_concept_benchmark.py
+index 295d006..30b1fe3 100644
+--- a/backend/evaluation/run_concept_benchmark.py
++++ b/backend/evaluation/run_concept_benchmark.py
+@@ -104,6 +104,19 @@ def main():
+         faithful = bool(s.get("std_concept"))
+         reason = mv.get("reason")
+         passed, canonical, verdict = judge(case, chosen)
++        if case.get("confirmed") and not passed:
++            try:
++                from services.error_collector import collect_gold_mismatch
++                collect_gold_mismatch(
++                    text=case["expansion"],
++                    stage="standardization",
++                    source="benchmark:concept",
++                    expected={"prefer": case["prefer"], "accept": case.get("accept", [])},
++                    predicted=chosen,
++                    abbreviation=case["label"],
++                )
++            except Exception:
++                pass
+         row = (case, chosen, faithful, reason, passed, canonical, verdict)
+         if case.get("confirmed"):
+             rows_conf.append(row)
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index 06309e3..0de7534 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -237,6 +237,11 @@ class ABBRService:
+                 ],
+             }
+             attempts.append(attempt_result)
++            try:
++                from services.error_collector import collect_unresolved
++                collect_unresolved(text, records)
++            except Exception:
++                pass
+             return {
+                 "original_text": text,
+                 "final_expanded_text": current_expanded_text,
+@@ -379,6 +384,12 @@ class ABBRService:
+             ],
+         }
+ 
++        try:
++            from services.error_collector import collect_unresolved
++            collect_unresolved(text, records)
++        except Exception:
++            pass
++
+         return {
+             "original_text": text,
+             "final_expanded_text": current_expanded_text,
+diff --git a/backend/services/error_collector.py b/backend/services/error_collector.py
+new file mode 100644
+index 0000000..5468947
+--- /dev/null
++++ b/backend/services/error_collector.py
+@@ -0,0 +1,89 @@
++"""
++Unified error store.
++
++Both runtime known-unknowns (record.failure) and benchmark gold mismatches are
++written to one JSONL file. Collection is intentionally fail-safe: callers should
++never let telemetry affect the main pipeline or scoring.
++"""
++import datetime
++import json
++from pathlib import Path
++
++
++DEFAULT_LOG = Path(__file__).resolve().parents[1] / "logs" / "unresolved_cases.jsonl"
++
++
++def _now():
++    return datetime.datetime.now().isoformat(timespec="seconds")
++
++
++def _append(rows, log_path=None):
++    if not rows:
++        return
++    path = Path(log_path) if log_path else DEFAULT_LOG
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with open(path, "a", encoding="utf-8") as fp:
++        for row in rows:
++            fp.write(json.dumps(row, ensure_ascii=False) + "\n")
++
++
++def collect_unresolved(text, records, log_path=None):
++    """Collect runtime known-unknowns from unified records that carry failure."""
++    try:
++        rows = []
++        for r in records or []:
++            f = r.get("failure")
++            if not f:
++                continue
++            rows.append({
++                "ts": _now(),
++                "text": text,
++                "failure_type": f.get("type"),
++                "stage": f.get("stage"),
++                "abbreviation": r.get("abbreviation"),
++                "expansion": r.get("expansion"),
++                "source": r.get("source"),
++                "reason": f.get("reason"),
++                "evidence": f.get("evidence"),
++            })
++        if records and not any(r.get("expansion") for r in records):
++            rows.append({
++                "ts": _now(),
++                "text": text,
++                "failure_type": "COVERAGE_FAILED",
++                "stage": "coverage",
++                "abbreviation": None,
++                "expansion": None,
++                "source": None,
++                "reason": "no abbreviation produced a usable expansion",
++                "evidence": {"abbreviations": [r.get("abbreviation") for r in records]},
++            })
++        _append(rows, log_path)
++    except Exception:
++        pass
++
++
++def collect_gold_mismatch(
++    text,
++    stage,
++    source,
++    expected,
++    predicted,
++    abbreviation=None,
++    log_path=None,
++):
++    """Collect benchmark unknown-unknowns where prediction differs from gold."""
++    try:
++        _append([{
++            "ts": _now(),
++            "text": text,
++            "failure_type": "GOLD_MISMATCH",
++            "stage": stage,
++            "abbreviation": abbreviation,
++            "expansion": None,
++            "source": source,
++            "reason": "predicted != gold",
++            "evidence": {"expected": expected, "predicted": predicted},
++        }], log_path)
++    except Exception:
++        pass
+```
+
 ## 2026-06-23 - 批次10：标准化反思精炼（reflect -> 同义词重检索 -> re-verify）
 
 ### 改动目的
@@ -4199,6 +4508,269 @@ index 52ab61d..06309e3 100644
 +                {"abbreviation": r["abbreviation"], "expansion": r["expansion"],
 +                 "status": r["status"], "failure": r["failure"]}
 +                for r in records
+         ],
+     }
+```
+
+## 2026-06-23 - Batch 11B final diff supplement
+
+### Note
+
+- The main Batch 11B log entry was inserted before the later Batch 11A entry because of historical log ordering.
+- This supplement is appended at the physical end of the log so the final fenced diff block matches the final staged patch for Batch 11B.
+
+```diff
+diff --git a/.gitignore b/.gitignore
+index e143517..4fa3181 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -7,5 +7,6 @@ __pycache__/
+ .DS_Store
+ .vscode/
+ backend/evaluation/benchmark_results.json
++backend/logs/
+ backend/data/snomed_clinical.csv
+ snomed_clinical.csv
+diff --git a/backend/evaluation/analyze_errors.py b/backend/evaluation/analyze_errors.py
+new file mode 100644
+index 0000000..22427e8
+--- /dev/null
++++ b/backend/evaluation/analyze_errors.py
+@@ -0,0 +1,64 @@
++"""
++Analyze the unified error JSONL store.
++
++Run `python backend/evaluation/run_benchmark.py` first so runtime failures and
++gold mismatches can be collected into backend/logs/unresolved_cases.jsonl.
++"""
++import json
++from collections import Counter
++from pathlib import Path
++
++
++LOG = Path(__file__).resolve().parents[1] / "logs" / "unresolved_cases.jsonl"
++
++
++def main():
++    if not LOG.exists():
++        print(f"No error log found: {LOG}")
++        print("Run `python backend/evaluation/run_benchmark.py` first.")
++        return
++
++    recs = [json.loads(x) for x in LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
++    print(f"Total error records: {len(recs)}\n")
++
++    def dist(title, counter, n=10):
++        print(title)
++        for k, c in counter.most_common(n):
++            print(f"  {c:>4}  {k}")
++        print()
++
++    dist(
++        "By failure_type (runtime known-unknowns + GOLD_MISMATCH):",
++        Counter(r["failure_type"] for r in recs),
++    )
++    dist(
++        "Top abbreviations:",
++        Counter(r.get("abbreviation") for r in recs if r.get("abbreviation")),
++    )
++    dist(
++        "Top withheld expansions (CODE_WITHHELD):",
++        Counter(
++            r.get("expansion")
++            for r in recs
++            if r["failure_type"] == "CODE_WITHHELD" and r.get("expansion")
++        ),
++    )
++    dist("By source:", Counter(r.get("source") for r in recs))
++    dist("By stage:", Counter(r.get("stage") for r in recs))
++
++    print("One sample per failure_type:")
++    seen = set()
++    for r in recs:
++        failure_type = r["failure_type"]
++        if failure_type in seen:
++            continue
++        seen.add(failure_type)
++        print(
++            f"  [{failure_type}] abbr={r.get('abbreviation')} "
++            f"exp={r.get('expansion')} src={r.get('source')}"
++        )
++        print(f"        reason={r.get('reason')}  evidence={r.get('evidence')}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/evaluation/run_benchmark.py b/backend/evaluation/run_benchmark.py
+index cf66ff9..41aaf13 100644
+--- a/backend/evaluation/run_benchmark.py
++++ b/backend/evaluation/run_benchmark.py
+@@ -106,6 +106,19 @@ def run_benchmark():
+         )
+         final_correct = is_correct and text_check["correct"]
+ 
++        if not final_correct:
++            try:
++                from services.error_collector import collect_gold_mismatch
++                collect_gold_mismatch(
++                    text=case["text"],
++                    stage="expansion",
++                    source="benchmark:main",
++                    expected=case["expected_mappings"],
++                    predicted=predicted_mappings,
++                )
++            except Exception:
++                pass
++
+         if final_correct:
+             correct += 1
+ 
+diff --git a/backend/evaluation/run_concept_benchmark.py b/backend/evaluation/run_concept_benchmark.py
+index 295d006..30b1fe3 100644
+--- a/backend/evaluation/run_concept_benchmark.py
++++ b/backend/evaluation/run_concept_benchmark.py
+@@ -104,6 +104,19 @@ def main():
+         faithful = bool(s.get("std_concept"))
+         reason = mv.get("reason")
+         passed, canonical, verdict = judge(case, chosen)
++        if case.get("confirmed") and not passed:
++            try:
++                from services.error_collector import collect_gold_mismatch
++                collect_gold_mismatch(
++                    text=case["expansion"],
++                    stage="standardization",
++                    source="benchmark:concept",
++                    expected={"prefer": case["prefer"], "accept": case.get("accept", [])},
++                    predicted=chosen,
++                    abbreviation=case["label"],
++                )
++            except Exception:
++                pass
+         row = (case, chosen, faithful, reason, passed, canonical, verdict)
+         if case.get("confirmed"):
+             rows_conf.append(row)
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index 06309e3..0de7534 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -237,6 +237,11 @@ class ABBRService:
+                 ],
+             }
+             attempts.append(attempt_result)
++            try:
++                from services.error_collector import collect_unresolved
++                collect_unresolved(text, records)
++            except Exception:
++                pass
+             return {
+                 "original_text": text,
+                 "final_expanded_text": current_expanded_text,
+@@ -379,6 +384,12 @@ class ABBRService:
              ],
          }
+ 
++        try:
++            from services.error_collector import collect_unresolved
++            collect_unresolved(text, records)
++        except Exception:
++            pass
++
+         return {
+             "original_text": text,
+             "final_expanded_text": current_expanded_text,
+diff --git a/backend/services/error_collector.py b/backend/services/error_collector.py
+new file mode 100644
+index 0000000..5468947
+--- /dev/null
++++ b/backend/services/error_collector.py
+@@ -0,0 +1,89 @@
++"""
++Unified error store.
++
++Both runtime known-unknowns (record.failure) and benchmark gold mismatches are
++written to one JSONL file. Collection is intentionally fail-safe: callers should
++never let telemetry affect the main pipeline or scoring.
++"""
++import datetime
++import json
++from pathlib import Path
++
++
++DEFAULT_LOG = Path(__file__).resolve().parents[1] / "logs" / "unresolved_cases.jsonl"
++
++
++def _now():
++    return datetime.datetime.now().isoformat(timespec="seconds")
++
++
++def _append(rows, log_path=None):
++    if not rows:
++        return
++    path = Path(log_path) if log_path else DEFAULT_LOG
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with open(path, "a", encoding="utf-8") as fp:
++        for row in rows:
++            fp.write(json.dumps(row, ensure_ascii=False) + "\n")
++
++
++def collect_unresolved(text, records, log_path=None):
++    """Collect runtime known-unknowns from unified records that carry failure."""
++    try:
++        rows = []
++        for r in records or []:
++            f = r.get("failure")
++            if not f:
++                continue
++            rows.append({
++                "ts": _now(),
++                "text": text,
++                "failure_type": f.get("type"),
++                "stage": f.get("stage"),
++                "abbreviation": r.get("abbreviation"),
++                "expansion": r.get("expansion"),
++                "source": r.get("source"),
++                "reason": f.get("reason"),
++                "evidence": f.get("evidence"),
++            })
++        if records and not any(r.get("expansion") for r in records):
++            rows.append({
++                "ts": _now(),
++                "text": text,
++                "failure_type": "COVERAGE_FAILED",
++                "stage": "coverage",
++                "abbreviation": None,
++                "expansion": None,
++                "source": None,
++                "reason": "no abbreviation produced a usable expansion",
++                "evidence": {"abbreviations": [r.get("abbreviation") for r in records]},
++            })
++        _append(rows, log_path)
++    except Exception:
++        pass
++
++
++def collect_gold_mismatch(
++    text,
++    stage,
++    source,
++    expected,
++    predicted,
++    abbreviation=None,
++    log_path=None,
++):
++    """Collect benchmark unknown-unknowns where prediction differs from gold."""
++    try:
++        _append([{
++            "ts": _now(),
++            "text": text,
++            "failure_type": "GOLD_MISMATCH",
++            "stage": stage,
++            "abbreviation": abbreviation,
++            "expansion": None,
++            "source": source,
++            "reason": "predicted != gold",
++            "evidence": {"expected": expected, "predicted": predicted},
++        }], log_path)
++    except Exception:
++        pass
 ```

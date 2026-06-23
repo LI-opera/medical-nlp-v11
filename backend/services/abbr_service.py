@@ -237,6 +237,11 @@ class ABBRService:
                 ],
             }
             attempts.append(attempt_result)
+            try:
+                from services.error_collector import collect_unresolved
+                collect_unresolved(text, records)
+            except Exception:
+                pass
             return {
                 "original_text": text,
                 "final_expanded_text": current_expanded_text,
@@ -378,6 +383,12 @@ class ABBRService:
                 for r in records
             ],
         }
+
+        try:
+            from services.error_collector import collect_unresolved
+            collect_unresolved(text, records)
+        except Exception:
+            pass
 
         return {
             "original_text": text,

@@ -106,6 +106,19 @@ def run_benchmark():
         )
         final_correct = is_correct and text_check["correct"]
 
+        if not final_correct:
+            try:
+                from services.error_collector import collect_gold_mismatch
+                collect_gold_mismatch(
+                    text=case["text"],
+                    stage="expansion",
+                    source="benchmark:main",
+                    expected=case["expected_mappings"],
+                    predicted=predicted_mappings,
+                )
+            except Exception:
+                pass
+
         if final_correct:
             correct += 1
 

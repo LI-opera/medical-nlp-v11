@@ -104,6 +104,19 @@ def main():
         faithful = bool(s.get("std_concept"))
         reason = mv.get("reason")
         passed, canonical, verdict = judge(case, chosen)
+        if case.get("confirmed") and not passed:
+            try:
+                from services.error_collector import collect_gold_mismatch
+                collect_gold_mismatch(
+                    text=case["expansion"],
+                    stage="standardization",
+                    source="benchmark:concept",
+                    expected={"prefer": case["prefer"], "accept": case.get("accept", [])},
+                    predicted=chosen,
+                    abbreviation=case["label"],
+                )
+            except Exception:
+                pass
         row = (case, chosen, faithful, reason, passed, canonical, verdict)
         if case.get("confirmed"):
             rows_conf.append(row)
