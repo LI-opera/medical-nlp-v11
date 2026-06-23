@@ -94,6 +94,69 @@ class ABBRService:
             result = result[:start] + expansion + result[end:]
         return result
 
+    def _reflect_refine_standardization(self, s, original_text, expanded_text):
+        """batch10 标准化反思:非精确同名(或弃码)时,换同义词重检索一次。
+        verify 在更全候选池中重选;只升级不强压,原候选仍在池中可回退。
+        """
+        expansion = s["expansion"]
+        chosen = s.get("std_concept")
+        chosen_name = chosen.get("concept_name") if chosen else None
+
+        # 已经是精确同名 -> 无需反思
+        if chosen_name and chosen_name.strip().lower() == expansion.strip().lower():
+            return
+
+        seen = [c["concept_name"] for c in s["std_cache"]]
+        requeries = self.verifier.propose_requeries(expansion, chosen_name, seen)
+        if not requeries:
+            return
+
+        # 换同义词重检索,并入候选池去重
+        pool = {c["concept_id"]: c for c in s["std_cache"]}
+        for rq in requeries:
+            docs = self.retriever.retrieve(
+                query=rq,
+                top_k=10,
+                domain_filter=None,
+                domain_boost=s.get("domain"),
+                score_threshold=0.6,
+            )
+            for doc in docs:
+                md = doc["metadata"]
+                if md["concept_id"] not in pool:
+                    pool[md["concept_id"]] = {
+                        "concept_id": md["concept_id"],
+                        "concept_name": md["concept_name"],
+                        "domain_id": md["domain_id"],
+                        "concept_code": md["concept_code"],
+                        "score": md["score"],
+                        "rerank_score": md.get("rerank_score"),
+                    }
+
+        new_cands = sorted(pool.values(), key=lambda c: float(c.get("score") or 0), reverse=True)[:15]
+        if len(new_cands) <= len(s["std_cache"]):
+            return  # 没带回新候选
+
+        verification = self.verifier.verify_mappings(
+            original_text=original_text,
+            expanded_text=expanded_text,
+            mapping_standardizations=[{
+                "abbreviation": s["abbreviation"],
+                "expansion": expansion,
+                "candidates": new_cands,
+            }],
+        )
+        vs = verification.get("mapping_validations", [])
+        v = vs[0] if vs else None
+        ci = v.get("chosen_index") if v else None
+        faithful = bool(v and v.get("standardization_faithful") is True)
+        if faithful and isinstance(ci, int) and not isinstance(ci, bool) and 0 <= ci < len(new_cands):
+            refined = new_cands[ci]
+            requery_names = {rq.strip().lower() for rq in requeries}
+            if refined.get("concept_name", "").strip().lower() in requery_names:
+                s["std_cache"] = new_cands
+                s["std_concept"] = refined
+
     def expand_verify_with_retry(self,text:str,max_retries:int=2):
         """
         缩写扩展 + 标准化 + 校验 + Reflection 重试。
@@ -236,6 +299,10 @@ class ABBRService:
                 )
                 s["std_concept"] = s["std_cache"][chosen_index] if valid_index else None
                 s["status"] = "LOCKED_OK"
+
+            # batch10: 标准化反思精炼。只对本轮 pending 触发;非精确同名/弃码才会换词重检索。
+            for s in pending:
+                self._reflect_refine_standardization(s, text, current_expanded_text)
 
             for item in mapping_standardizations:
                 state = next(

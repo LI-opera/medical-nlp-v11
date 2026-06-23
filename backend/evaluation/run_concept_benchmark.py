@@ -18,8 +18,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BACKEND_DIR))
 
 from evaluation.concept_benchmark_cases import CONCEPT_BENCHMARK_CASES
-from services.medical_retriever import MedicalRetriever
-from services.abbr_verifier import ABBVerifier
+from services.abbr_service import ABBRService
 
 TOP_K = 10            # 与主链路状态机 docs[:10] 一致
 SCORE_TH = 0.6
@@ -27,26 +26,6 @@ SCORE_TH = 0.6
 
 def _norm(s):
     return s.strip().lower() if isinstance(s, str) else s
-
-
-def retrieve_top(retriever, query):
-    docs = retriever.retrieve(query=query, top_k=TOP_K, domain_filter=None, score_threshold=SCORE_TH)
-    return [d["metadata"] for d in docs]
-
-
-def verify_pick(verifier, label, expansion, candidates):
-    v = verifier.verify_mappings(
-        original_text=f"The patient has {expansion}.",
-        expanded_text=f"The patient has {expansion}.",
-        mapping_standardizations=[{
-            "abbreviation": label, "expansion": expansion, "candidates": candidates,
-        }],
-    )
-    mvs = v.get("mapping_validations", [])
-    mv = mvs[0] if mvs else {}
-    ci = mv.get("chosen_index")
-    name = candidates[ci]["concept_name"] if (ci is not None and 0 <= ci < len(candidates)) else None
-    return name, mv.get("standardization_faithful"), mv.get("reason")
 
 
 def judge(case, chosen_name):
@@ -79,15 +58,51 @@ def show(rows, title):
 
 
 def main():
-    retriever = MedicalRetriever()
-    verifier = ABBVerifier()
+    svc = ABBRService()
 
     conf_total = conf_pass = conf_canon = 0
     rows_conf, rows_unconf = [], []
 
     for case in CONCEPT_BENCHMARK_CASES:
-        cands = retrieve_top(retriever, case["expansion"])
-        chosen, faithful, reason = verify_pick(verifier, case["label"], case["expansion"], cands)
+        original_text = f"The patient has {case['expansion']}."
+        expanded_text = f"The patient has {case['expansion']}."
+        cands = [
+            d["metadata"]
+            for d in svc.retriever.retrieve(
+                query=case["expansion"],
+                top_k=TOP_K,
+                domain_filter=None,
+                score_threshold=SCORE_TH,
+            )
+        ]
+        res = svc.verifier.verify_mappings(
+            original_text=original_text,
+            expanded_text=expanded_text,
+            mapping_standardizations=[{
+                "abbreviation": case["label"],
+                "expansion": case["expansion"],
+                "candidates": cands,
+            }],
+        )
+        mv = (res.get("mapping_validations") or [{}])[0]
+        ci = mv.get("chosen_index")
+        init = cands[ci] if (
+            isinstance(ci, int)
+            and not isinstance(ci, bool)
+            and 0 <= ci < len(cands)
+            and mv.get("standardization_faithful") is True
+        ) else None
+        s = {
+            "abbreviation": case["label"],
+            "expansion": case["expansion"],
+            "std_cache": cands,
+            "std_concept": init,
+            "domain": None,
+        }
+        svc._reflect_refine_standardization(s, original_text, expanded_text)
+        chosen = s["std_concept"]["concept_name"] if s.get("std_concept") else None
+        faithful = bool(s.get("std_concept"))
+        reason = mv.get("reason")
         passed, canonical, verdict = judge(case, chosen)
         row = (case, chosen, faithful, reason, passed, canonical, verdict)
         if case.get("confirmed"):

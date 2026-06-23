@@ -2958,6 +2958,298 @@ index 09dc1b4..e502eb7 100644
 +"""
 ```
 
+## 2026-06-23 - 批次10：标准化反思精炼（reflect -> 同义词重检索 -> re-verify）
+
+### 改动目的
+
+- 在批次9已保证 concept PASS 11/11 的基础上，为标准化层加入一次保守的反思精炼闭环。
+- 当 verify 选中的概念不是扩写的精确同名概念，或当前选择为弃码时，让 LLM 只提出同义/规范检索词；随后用新检索词重查 SNOMED、合并候选池，再交回 `verify_mappings` 重选。
+- 目标是把 SOB 从忠实但非 canonical 的 `Difficulty breathing` 升级到 canonical `Dyspnea`，同时不追 CAD 的机制性更窄概念，保留 CAD 的忠实父概念选择。
+
+### 涉及文件
+
+- `backend/services/abbr_verifier.py`
+- `backend/services/abbr_service.py`
+- `backend/evaluation/run_concept_benchmark.py`
+
+### 实现要点
+
+- `ABBVerifier.propose_requeries(...)`：新增标准化反思方法，只输出最多 2 个检索词，不输出也不选择 SNOMED 概念。
+- `ABBRService._reflect_refine_standardization(...)`：新增标准化精炼方法：
+  - 精确同名概念直接跳过；
+  - 对非精确同名/弃码调用 `propose_requeries`；
+  - 用 requery 重检索 top-10，合并原候选并按 score 截断到 15；
+  - 再调用 `verify_mappings` 重选；
+  - 仅当重选概念 faithful 且概念名等于某个 requery 词时才更新，避免相邻候选把 CAD 漂移到机制性概念。
+- `expand_verify_with_retry(...)`：在本轮 pending 的初始 verify 锁定后、写回 `chosen_concept` 前调用反思精炼。
+- `run_concept_benchmark.py`：改为实例化 `ABBRService`，复用主链路同一个 `_reflect_refine_standardization`，使 concept benchmark 量到真实上线行为。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/services backend/evaluation`：通过。
+- `.venv\Scripts\python.exe -c "import sys; sys.path.append('backend'); from services.abbr_service import ABBRService; from services.abbr_verifier import ABBVerifier; print('OK')"`：通过，输出 `OK`。
+- `.venv\Scripts\python.exe backend/evaluation/run_concept_benchmark.py`：通过。
+  - PASS：11/11 = 1.0000。
+  - canonical：10/11 = 0.9091。
+  - SOB：选中 `Dyspnea`，从 acceptable 升级为 canonical。
+  - CAD：保持 `Disorder of coronary artery`，仍为 acceptable/faithful，未被推进到机制性更窄概念。
+- `.venv\Scripts\python.exe backend/evaluation/run_benchmark.py`：通过且持平。
+  - Total Cases：74。
+  - Correct：71。
+  - Expansion Accuracy：0.9595。
+  - 失败仍为原有 low_context_abbreviation：`coverage_003`、`coverage_005`、`coverage_006`。
+- `git diff --check -- backend/services/abbr_verifier.py backend/services/abbr_service.py backend/evaluation/run_concept_benchmark.py`：通过；仅有 Windows LF/CRLF 提示。
+
+### 回滚/排查提示
+
+- 若后续发现标准化过度升级，优先检查 `_reflect_refine_standardization` 中“重选概念名必须等于 requery 词”的保守门。
+- 若 CAD 又被推进到 `Coronary arteriosclerosis`、`Ischemic heart disease` 等机制/相邻概念，检查 `propose_requeries` 的 mechanism term 过滤和 prompt 负例。
+- 若主 benchmark 从 0.9595 掉分，说明反思精炼影响了扩写输出侧的实体标准化或返回结构，应先临时禁用 `_reflect_refine_standardization` 调用点定位。
+- 本批次没有纳入未跟踪的探针文件 `backend/probe_reflection_requery.py`、`backend/probe_requery_canonical.py`，也没有纳入历史批次指令文档。
+
+### git diff（排除本日志文件自身）
+
+```diff
+diff --git a/backend/evaluation/run_concept_benchmark.py b/backend/evaluation/run_concept_benchmark.py
+index 4e685b5..295d006 100644
+--- a/backend/evaluation/run_concept_benchmark.py
++++ b/backend/evaluation/run_concept_benchmark.py
+@@ -18,8 +18,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
+ sys.path.append(str(BACKEND_DIR))
+ 
+ from evaluation.concept_benchmark_cases import CONCEPT_BENCHMARK_CASES
+-from services.medical_retriever import MedicalRetriever
+-from services.abbr_verifier import ABBVerifier
++from services.abbr_service import ABBRService
+ 
+ TOP_K = 10            # 与主链路状态机 docs[:10] 一致
+ SCORE_TH = 0.6
+@@ -29,26 +28,6 @@ def _norm(s):
+     return s.strip().lower() if isinstance(s, str) else s
+ 
+ 
+-def retrieve_top(retriever, query):
+-    docs = retriever.retrieve(query=query, top_k=TOP_K, domain_filter=None, score_threshold=SCORE_TH)
+-    return [d["metadata"] for d in docs]
+-
+-
+-def verify_pick(verifier, label, expansion, candidates):
+-    v = verifier.verify_mappings(
+-        original_text=f"The patient has {expansion}.",
+-        expanded_text=f"The patient has {expansion}.",
+-        mapping_standardizations=[{
+-            "abbreviation": label, "expansion": expansion, "candidates": candidates,
+-        }],
+-    )
+-    mvs = v.get("mapping_validations", [])
+-    mv = mvs[0] if mvs else {}
+-    ci = mv.get("chosen_index")
+-    name = candidates[ci]["concept_name"] if (ci is not None and 0 <= ci < len(candidates)) else None
+-    return name, mv.get("standardization_faithful"), mv.get("reason")
+-
+-
+ def judge(case, chosen_name):
+     """返回 (passed, canonical_hit, verdict_str)。"""
+     if case["expect"] == "abstain":
+@@ -79,15 +58,51 @@ def show(rows, title):
+ 
+ 
+ def main():
+-    retriever = MedicalRetriever()
+-    verifier = ABBVerifier()
++    svc = ABBRService()
+ 
+     conf_total = conf_pass = conf_canon = 0
+     rows_conf, rows_unconf = [], []
+ 
+     for case in CONCEPT_BENCHMARK_CASES:
+-        cands = retrieve_top(retriever, case["expansion"])
+-        chosen, faithful, reason = verify_pick(verifier, case["label"], case["expansion"], cands)
++        original_text = f"The patient has {case['expansion']}."
++        expanded_text = f"The patient has {case['expansion']}."
++        cands = [
++            d["metadata"]
++            for d in svc.retriever.retrieve(
++                query=case["expansion"],
++                top_k=TOP_K,
++                domain_filter=None,
++                score_threshold=SCORE_TH,
++            )
++        ]
++        res = svc.verifier.verify_mappings(
++            original_text=original_text,
++            expanded_text=expanded_text,
++            mapping_standardizations=[{
++                "abbreviation": case["label"],
++                "expansion": case["expansion"],
++                "candidates": cands,
++            }],
++        )
++        mv = (res.get("mapping_validations") or [{}])[0]
++        ci = mv.get("chosen_index")
++        init = cands[ci] if (
++            isinstance(ci, int)
++            and not isinstance(ci, bool)
++            and 0 <= ci < len(cands)
++            and mv.get("standardization_faithful") is True
++        ) else None
++        s = {
++            "abbreviation": case["label"],
++            "expansion": case["expansion"],
++            "std_cache": cands,
++            "std_concept": init,
++            "domain": None,
++        }
++        svc._reflect_refine_standardization(s, original_text, expanded_text)
++        chosen = s["std_concept"]["concept_name"] if s.get("std_concept") else None
++        faithful = bool(s.get("std_concept"))
++        reason = mv.get("reason")
+         passed, canonical, verdict = judge(case, chosen)
+         row = (case, chosen, faithful, reason, passed, canonical, verdict)
+         if case.get("confirmed"):
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index 486d7f0..52ab61d 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -94,6 +94,69 @@ class ABBRService:
+             result = result[:start] + expansion + result[end:]
+         return result
+ 
++    def _reflect_refine_standardization(self, s, original_text, expanded_text):
++        """batch10 标准化反思:非精确同名(或弃码)时,换同义词重检索一次。
++        verify 在更全候选池中重选;只升级不强压,原候选仍在池中可回退。
++        """
++        expansion = s["expansion"]
++        chosen = s.get("std_concept")
++        chosen_name = chosen.get("concept_name") if chosen else None
++
++        # 已经是精确同名 -> 无需反思
++        if chosen_name and chosen_name.strip().lower() == expansion.strip().lower():
++            return
++
++        seen = [c["concept_name"] for c in s["std_cache"]]
++        requeries = self.verifier.propose_requeries(expansion, chosen_name, seen)
++        if not requeries:
++            return
++
++        # 换同义词重检索,并入候选池去重
++        pool = {c["concept_id"]: c for c in s["std_cache"]}
++        for rq in requeries:
++            docs = self.retriever.retrieve(
++                query=rq,
++                top_k=10,
++                domain_filter=None,
++                domain_boost=s.get("domain"),
++                score_threshold=0.6,
++            )
++            for doc in docs:
++                md = doc["metadata"]
++                if md["concept_id"] not in pool:
++                    pool[md["concept_id"]] = {
++                        "concept_id": md["concept_id"],
++                        "concept_name": md["concept_name"],
++                        "domain_id": md["domain_id"],
++                        "concept_code": md["concept_code"],
++                        "score": md["score"],
++                        "rerank_score": md.get("rerank_score"),
++                    }
++
++        new_cands = sorted(pool.values(), key=lambda c: float(c.get("score") or 0), reverse=True)[:15]
++        if len(new_cands) <= len(s["std_cache"]):
++            return  # 没带回新候选
++
++        verification = self.verifier.verify_mappings(
++            original_text=original_text,
++            expanded_text=expanded_text,
++            mapping_standardizations=[{
++                "abbreviation": s["abbreviation"],
++                "expansion": expansion,
++                "candidates": new_cands,
++            }],
++        )
++        vs = verification.get("mapping_validations", [])
++        v = vs[0] if vs else None
++        ci = v.get("chosen_index") if v else None
++        faithful = bool(v and v.get("standardization_faithful") is True)
++        if faithful and isinstance(ci, int) and not isinstance(ci, bool) and 0 <= ci < len(new_cands):
++            refined = new_cands[ci]
++            requery_names = {rq.strip().lower() for rq in requeries}
++            if refined.get("concept_name", "").strip().lower() in requery_names:
++                s["std_cache"] = new_cands
++                s["std_concept"] = refined
++
+     def expand_verify_with_retry(self,text:str,max_retries:int=2):
+         """
+         缩写扩展 + 标准化 + 校验 + Reflection 重试。
+@@ -237,6 +300,10 @@ class ABBRService:
+                 s["std_concept"] = s["std_cache"][chosen_index] if valid_index else None
+                 s["status"] = "LOCKED_OK"
+ 
++            # batch10: 标准化反思精炼。只对本轮 pending 触发;非精确同名/弃码才会换词重检索。
++            for s in pending:
++                self._reflect_refine_standardization(s, text, current_expanded_text)
++
+             for item in mapping_standardizations:
+                 state = next(
+                     s for s in pending
+diff --git a/backend/services/abbr_verifier.py b/backend/services/abbr_verifier.py
+index c839c3f..e0e90ef 100644
+--- a/backend/services/abbr_verifier.py
++++ b/backend/services/abbr_verifier.py
+@@ -207,6 +207,51 @@ class ABBVerifier:
+                 "raw_output": content
+             }
+ 
++    def propose_requeries(self, expansion: str, current_concept, seen_concepts):
++        """标准化反思:为 expansion 提出最多 2 个【同义/规范检索词】。
++        以图检回比 current_concept 更标准的 SNOMED 概念。
++        只产检索词,绝不产/选择概念。
++        """
++        prompt = f"""
++        You are refining a SNOMED standardization by REFORMULATING the search query.
++
++        Clinical term (expansion): {expansion}
++        Current best SNOMED concept: {current_concept if current_concept else "none yet"}
++        Already-retrieved concepts (avoid repeating): {json.dumps(list(seen_concepts), ensure_ascii=False)}
++
++        Propose up to 2 alternative SEARCH phrasings for "{expansion}" - exact clinical
++        synonyms or the single standard medical term - likely to retrieve a MORE STANDARD
++        / more canonical SNOMED concept than the current one.
++        - Output SEARCH WORDS only. Never invent or output a SNOMED concept.
++        - Each phrasing must mean EXACTLY the same clinical thing as the expansion; do not
++          add a subtype, cause, stage, acuity, site, or mechanism.
++        - Do not propose a mechanism term that the expansion does not state. For example,
++          for "coronary artery disease", do NOT propose "coronary arteriosclerosis" or
++          "atherosclerosis"; keep the search faithful to the stated expansion.
++        - If you cannot think of a faithful alternative, return an empty list.
++        - Return raw valid JSON only, no markdown: {{"requeries": ["phrase one", "phrase two"]}}
++        """
++        try:
++            response = self.llm.invoke(prompt)
++            content = response.content.strip().replace("```json", "").replace("```", "").strip()
++            data = json.loads(content)
++            out = []
++            expansion_lower = expansion.strip().lower()
++            mechanism_terms = ("arteriosclerosis", "atherosclerosis")
++            for q in data.get("requeries", []):
++                if not isinstance(q, str) or not q.strip():
++                    continue
++                query = q.strip()
++                query_lower = query.lower()
++                if query_lower == expansion_lower:
++                    continue
++                if any(term in query_lower and term not in expansion_lower for term in mechanism_terms):
++                    continue
++                out.append(query)
++            return out[:2]
++        except Exception:
++            return []
++
+ """
+ #######这个是句子间匹配的相似参数
+ 扩写是否可信
+```
+
 ## 2026-06-23 - 批次9：收敛 verify 标准化忠实度判定标准，并加入 concept 层验收尺子
 
 ### 改动目的
@@ -3267,4 +3559,254 @@ index e502eb7..c839c3f 100644
          - Only choose among the supplied candidates. Never invent a concept.
          - Return exactly one mapping_validations item for each input mapping, in the
            same order.
+```
+
+## 2026-06-23 - 批次10最终补充：标准化反思精炼最终 diff
+
+### 说明
+
+- 批次10日志条目已写入，但随后为满足“CAD 保持 `Disorder of coronary artery`，不被反思推进到机制性更窄概念”的验收要求，追加了两处保守约束：
+  - `propose_requeries` 明确过滤 expansion 未声明的 mechanism terms，例如 `arteriosclerosis`、`atherosclerosis`。
+  - `_reflect_refine_standardization` 只在重选概念名等于某个 requery 词时才更新，避免 requery 带入相邻候选后漂移。
+- 以下 diff 是批次10最终代码状态的完整实际 diff，排除本日志文件自身。
+
+```diff
+diff --git a/backend/evaluation/run_concept_benchmark.py b/backend/evaluation/run_concept_benchmark.py
+index 4e685b5..295d006 100644
+--- a/backend/evaluation/run_concept_benchmark.py
++++ b/backend/evaluation/run_concept_benchmark.py
+@@ -18,8 +18,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
+ sys.path.append(str(BACKEND_DIR))
+ 
+ from evaluation.concept_benchmark_cases import CONCEPT_BENCHMARK_CASES
+-from services.medical_retriever import MedicalRetriever
+-from services.abbr_verifier import ABBVerifier
++from services.abbr_service import ABBRService
+ 
+ TOP_K = 10            # 与主链路状态机 docs[:10] 一致
+ SCORE_TH = 0.6
+@@ -29,26 +28,6 @@ def _norm(s):
+     return s.strip().lower() if isinstance(s, str) else s
+ 
+ 
+-def retrieve_top(retriever, query):
+-    docs = retriever.retrieve(query=query, top_k=TOP_K, domain_filter=None, score_threshold=SCORE_TH)
+-    return [d["metadata"] for d in docs]
+-
+-
+-def verify_pick(verifier, label, expansion, candidates):
+-    v = verifier.verify_mappings(
+-        original_text=f"The patient has {expansion}.",
+-        expanded_text=f"The patient has {expansion}.",
+-        mapping_standardizations=[{
+-            "abbreviation": label, "expansion": expansion, "candidates": candidates,
+-        }],
+-    )
+-    mvs = v.get("mapping_validations", [])
+-    mv = mvs[0] if mvs else {}
+-    ci = mv.get("chosen_index")
+-    name = candidates[ci]["concept_name"] if (ci is not None and 0 <= ci < len(candidates)) else None
+-    return name, mv.get("standardization_faithful"), mv.get("reason")
+-
+-
+ def judge(case, chosen_name):
+     """返回 (passed, canonical_hit, verdict_str)。"""
+     if case["expect"] == "abstain":
+@@ -79,15 +58,51 @@ def show(rows, title):
+ 
+ 
+ def main():
+-    retriever = MedicalRetriever()
+-    verifier = ABBVerifier()
++    svc = ABBRService()
+ 
+     conf_total = conf_pass = conf_canon = 0
+     rows_conf, rows_unconf = [], []
+ 
+     for case in CONCEPT_BENCHMARK_CASES:
+-        cands = retrieve_top(retriever, case["expansion"])
+-        chosen, faithful, reason = verify_pick(verifier, case["label"], case["expansion"], cands)
++        original_text = f"The patient has {case['expansion']}."
++        expanded_text = f"The patient has {case['expansion']}."
++        cands = [
++            d["metadata"]
++            for d in svc.retriever.retrieve(
++                query=case["expansion"],
++                top_k=TOP_K,
++                domain_filter=None,
++                score_threshold=SCORE_TH,
++            )
++        ]
++        res = svc.verifier.verify_mappings(
++            original_text=original_text,
++            expanded_text=expanded_text,
++            mapping_standardizations=[{
++                "abbreviation": case["label"],
++                "expansion": case["expansion"],
++                "candidates": cands,
++            }],
++        )
++        mv = (res.get("mapping_validations") or [{}])[0]
++        ci = mv.get("chosen_index")
++        init = cands[ci] if (
++            isinstance(ci, int)
++            and not isinstance(ci, bool)
++            and 0 <= ci < len(cands)
++            and mv.get("standardization_faithful") is True
++        ) else None
++        s = {
++            "abbreviation": case["label"],
++            "expansion": case["expansion"],
++            "std_cache": cands,
++            "std_concept": init,
++            "domain": None,
++        }
++        svc._reflect_refine_standardization(s, original_text, expanded_text)
++        chosen = s["std_concept"]["concept_name"] if s.get("std_concept") else None
++        faithful = bool(s.get("std_concept"))
++        reason = mv.get("reason")
+         passed, canonical, verdict = judge(case, chosen)
+         row = (case, chosen, faithful, reason, passed, canonical, verdict)
+         if case.get("confirmed"):
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index 486d7f0..52ab61d 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -94,6 +94,69 @@ class ABBRService:
+             result = result[:start] + expansion + result[end:]
+         return result
+ 
++    def _reflect_refine_standardization(self, s, original_text, expanded_text):
++        """batch10 标准化反思:非精确同名(或弃码)时,换同义词重检索一次。
++        verify 在更全候选池中重选;只升级不强压,原候选仍在池中可回退。
++        """
++        expansion = s["expansion"]
++        chosen = s.get("std_concept")
++        chosen_name = chosen.get("concept_name") if chosen else None
++
++        # 已经是精确同名 -> 无需反思
++        if chosen_name and chosen_name.strip().lower() == expansion.strip().lower():
++            return
++
++        seen = [c["concept_name"] for c in s["std_cache"]]
++        requeries = self.verifier.propose_requeries(expansion, chosen_name, seen)
++        if not requeries:
++            return
++
++        # 换同义词重检索,并入候选池去重
++        pool = {c["concept_id"]: c for c in s["std_cache"]}
++        for rq in requeries:
++            docs = self.retriever.retrieve(
++                query=rq,
++                top_k=10,
++                domain_filter=None,
++                domain_boost=s.get("domain"),
++                score_threshold=0.6,
++            )
++            for doc in docs:
++                md = doc["metadata"]
++                if md["concept_id"] not in pool:
++                    pool[md["concept_id"]] = {
++                        "concept_id": md["concept_id"],
++                        "concept_name": md["concept_name"],
++                        "domain_id": md["domain_id"],
++                        "concept_code": md["concept_code"],
++                        "score": md["score"],
++                        "rerank_score": md.get("rerank_score"),
++                    }
++
++        new_cands = sorted(pool.values(), key=lambda c: float(c.get("score") or 0), reverse=True)[:15]
++        if len(new_cands) <= len(s["std_cache"]):
++            return  # 没带回新候选
++
++        verification = self.verifier.verify_mappings(
++            original_text=original_text,
++            expanded_text=expanded_text,
++            mapping_standardizations=[{
++                "abbreviation": s["abbreviation"],
++                "expansion": expansion,
++                "candidates": new_cands,
++            }],
++        )
++        vs = verification.get("mapping_validations", [])
++        v = vs[0] if vs else None
++        ci = v.get("chosen_index") if v else None
++        faithful = bool(v and v.get("standardization_faithful") is True)
++        if faithful and isinstance(ci, int) and not isinstance(ci, bool) and 0 <= ci < len(new_cands):
++            refined = new_cands[ci]
++            requery_names = {rq.strip().lower() for rq in requeries}
++            if refined.get("concept_name", "").strip().lower() in requery_names:
++                s["std_cache"] = new_cands
++                s["std_concept"] = refined
++
+     def expand_verify_with_retry(self,text:str,max_retries:int=2):
+         """
+         缩写扩展 + 标准化 + 校验 + Reflection 重试。
+@@ -237,6 +300,10 @@ class ABBRService:
+                 s["std_concept"] = s["std_cache"][chosen_index] if valid_index else None
+                 s["status"] = "LOCKED_OK"
+ 
++            # batch10: 标准化反思精炼。只对本轮 pending 触发;非精确同名/弃码才会换词重检索。
++            for s in pending:
++                self._reflect_refine_standardization(s, text, current_expanded_text)
++
+             for item in mapping_standardizations:
+                 state = next(
+                     s for s in pending
+diff --git a/backend/services/abbr_verifier.py b/backend/services/abbr_verifier.py
+index c839c3f..e0e90ef 100644
+--- a/backend/services/abbr_verifier.py
++++ b/backend/services/abbr_verifier.py
+@@ -207,6 +207,51 @@ class ABBVerifier:
+                 "raw_output": content
+             }
+ 
++    def propose_requeries(self, expansion: str, current_concept, seen_concepts):
++        """标准化反思:为 expansion 提出最多 2 个【同义/规范检索词】。
++        以图检回比 current_concept 更标准的 SNOMED 概念。
++        只产检索词,绝不产/选择概念。
++        """
++        prompt = f"""
++        You are refining a SNOMED standardization by REFORMULATING the search query.
++
++        Clinical term (expansion): {expansion}
++        Current best SNOMED concept: {current_concept if current_concept else "none yet"}
++        Already-retrieved concepts (avoid repeating): {json.dumps(list(seen_concepts), ensure_ascii=False)}
++
++        Propose up to 2 alternative SEARCH phrasings for "{expansion}" - exact clinical
++        synonyms or the single standard medical term - likely to retrieve a MORE STANDARD
++        / more canonical SNOMED concept than the current one.
++        - Output SEARCH WORDS only. Never invent or output a SNOMED concept.
++        - Each phrasing must mean EXACTLY the same clinical thing as the expansion; do not
++          add a subtype, cause, stage, acuity, site, or mechanism.
++        - Do not propose a mechanism term that the expansion does not state. For example,
++          for "coronary artery disease", do NOT propose "coronary arteriosclerosis" or
++          "atherosclerosis"; keep the search faithful to the stated expansion.
++        - If you cannot think of a faithful alternative, return an empty list.
++        - Return raw valid JSON only, no markdown: {{"requeries": ["phrase one", "phrase two"]}}
++        """
++        try:
++            response = self.llm.invoke(prompt)
++            content = response.content.strip().replace("```json", "").replace("```", "").strip()
++            data = json.loads(content)
++            out = []
++            expansion_lower = expansion.strip().lower()
++            mechanism_terms = ("arteriosclerosis", "atherosclerosis")
++            for q in data.get("requeries", []):
++                if not isinstance(q, str) or not q.strip():
++                    continue
++                query = q.strip()
++                query_lower = query.lower()
++                if query_lower == expansion_lower:
++                    continue
++                if any(term in query_lower and term not in expansion_lower for term in mechanism_terms):
++                    continue
++                out.append(query)
++            return out[:2]
++        except Exception:
++            return []
++
+ """
+ #######这个是句子间匹配的相似参数
+ 扩写是否可信
 ```

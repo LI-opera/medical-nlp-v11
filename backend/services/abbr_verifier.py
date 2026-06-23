@@ -207,6 +207,51 @@ class ABBVerifier:
                 "raw_output": content
             }
 
+    def propose_requeries(self, expansion: str, current_concept, seen_concepts):
+        """标准化反思:为 expansion 提出最多 2 个【同义/规范检索词】。
+        以图检回比 current_concept 更标准的 SNOMED 概念。
+        只产检索词,绝不产/选择概念。
+        """
+        prompt = f"""
+        You are refining a SNOMED standardization by REFORMULATING the search query.
+
+        Clinical term (expansion): {expansion}
+        Current best SNOMED concept: {current_concept if current_concept else "none yet"}
+        Already-retrieved concepts (avoid repeating): {json.dumps(list(seen_concepts), ensure_ascii=False)}
+
+        Propose up to 2 alternative SEARCH phrasings for "{expansion}" - exact clinical
+        synonyms or the single standard medical term - likely to retrieve a MORE STANDARD
+        / more canonical SNOMED concept than the current one.
+        - Output SEARCH WORDS only. Never invent or output a SNOMED concept.
+        - Each phrasing must mean EXACTLY the same clinical thing as the expansion; do not
+          add a subtype, cause, stage, acuity, site, or mechanism.
+        - Do not propose a mechanism term that the expansion does not state. For example,
+          for "coronary artery disease", do NOT propose "coronary arteriosclerosis" or
+          "atherosclerosis"; keep the search faithful to the stated expansion.
+        - If you cannot think of a faithful alternative, return an empty list.
+        - Return raw valid JSON only, no markdown: {{"requeries": ["phrase one", "phrase two"]}}
+        """
+        try:
+            response = self.llm.invoke(prompt)
+            content = response.content.strip().replace("```json", "").replace("```", "").strip()
+            data = json.loads(content)
+            out = []
+            expansion_lower = expansion.strip().lower()
+            mechanism_terms = ("arteriosclerosis", "atherosclerosis")
+            for q in data.get("requeries", []):
+                if not isinstance(q, str) or not q.strip():
+                    continue
+                query = q.strip()
+                query_lower = query.lower()
+                if query_lower == expansion_lower:
+                    continue
+                if any(term in query_lower and term not in expansion_lower for term in mechanism_terms):
+                    continue
+                out.append(query)
+            return out[:2]
+        except Exception:
+            return []
+
 """
 #######这个是句子间匹配的相似参数
 扩写是否可信
