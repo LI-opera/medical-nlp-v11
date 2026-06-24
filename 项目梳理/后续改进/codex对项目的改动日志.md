@@ -5570,3 +5570,86 @@ index 0000000..6a5cc19
 +
 +    raise ValueError(f"Unsupported LLM provider: {config.provider}")
 ```
+
+## 2026-06-24 批次16：verify 异质判官 Qwen 实验与回退结论
+
+### 修改目的
+
+本批次原目标是把 `ABBVerifier` 的默认 verify 模型从 DeepSeek 切到 Qwen/DashScope，让 coverage 继续由 DeepSeek 生成，而 verify 使用另一个厂商模型做异质检查，验证是否能打破“自生成自检查”。
+
+### 实施过程
+
+- 按批次16要求，先把 `backend/services/abbr_verifier.py` 的 `ABBVerifier.__init__` 改成 `create_llm(QWEN_CONFIG)`。
+- 未修改 `verify()`、`verify_mappings()`、`propose_requeries()` 的任何业务逻辑。
+- 运行编译和 import，确认 Qwen 默认路径能实例化为 `ChatOpenAI`。
+- 运行 concept benchmark，Qwen 判官结果持平：
+  - PASS：`11/11 = 1.0000`
+  - canonical：`10/11 = 0.9091`
+  - SOB 仍选中 `Dyspnea`
+  - CAD 仍选中 `Disorder of coronary artery`，属于 acceptable 但非 canonical
+- 继续运行主 benchmark 做控制项，但 Qwen 默认 verify 下：
+  - 第一次主 benchmark 约 700 秒超时，未写出新结果。
+  - 清理残留进程后第二次主 benchmark 给到约 1200 秒仍超时。
+- 按批次16判定规则：“好就留，平/差就退；主 bench 掉分或报错则回退”，本轮不保留 Qwen 作为默认判官。
+
+### 最终保留的代码结果
+
+- `ABBVerifier` 不再手写 `ChatDeepSeek(...)`，而是改为通过批次15新增的 `create_llm(config)` 工厂创建模型。
+- 默认配置回退为 `DEEPSEEK_CONFIG`，因此默认行为与基线一致，避免 Qwen 主 benchmark 超时风险。
+- 后续如需继续 A/B Qwen，可以显式调用 `ABBVerifier(QWEN_CONFIG)`，但本轮不把 Qwen 设为默认。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/services backend/utils`：通过。
+- `ABBVerifier()` 默认模型类型：`ChatDeepSeek`。
+- Qwen 默认实验阶段：
+  - concept benchmark：PASS `11/11`，canonical `10/11`，指标持平。
+  - main benchmark：两次超时，未满足合入条件。
+- 最终 DeepSeek 默认回退后：
+  - main benchmark：`71/74 = 0.9595`，保持不变。
+  - concept benchmark：PASS `11/11`，canonical `10/11`，保持不变。
+
+### 回滚与排查提示
+
+- 如果要彻底回到批次15前写法，可以把 `ABBVerifier.__init__` 还原为手写 `ChatDeepSeek(...)`。
+- 当前最终版本默认仍是 DeepSeek，只是模型创建路径改为工厂；如果后续需要 Qwen 实验，应显式传入 `QWEN_CONFIG` 并先解决主 benchmark 超时问题。
+- `backend/evaluation/error_analysis_report.json` 在本轮开始前已经是未提交修改，本轮未纳入提交。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/services/abbr_verifier.py b/backend/services/abbr_verifier.py
+index e0e90ef..f698ecc 100644
+--- a/backend/services/abbr_verifier.py
++++ b/backend/services/abbr_verifier.py
+@@ -1,7 +1,8 @@
+ import json
+ import os
+ from dotenv import load_dotenv
+-from langchain_deepseek import ChatDeepSeek
++from utils.llm_config import DEEPSEEK_CONFIG, LLMConfig
++from utils.llm_factory import create_llm
+
+ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ BACKEND_DIR = os.path.dirname(CURRENT_DIR)
+@@ -14,17 +15,8 @@ class ABBVerifier:
+     医学缩写扩展校验器：
+     作用：判断LLM扩写后的文本是否保持愿意，并且是否能被后续SNOMED标准化结果支持
+     """
+-    def __init__(self):
+-        api_key = os.getenv("DEEPSEEK_API_KEY")
+-        if not api_key:
+-            raise ValueError("DEEPSEEK_API_KEY is not set.")
+-        self.llm = ChatDeepSeek(
+-            model="deepseek-chat",
+-            api_key=api_key,
+-            temperature=0,
+-            #如果调用 DeepSeek API 失败，最多自动重试 2 次。
+-            max_retries=2
+-        )
++    def __init__(self, config: LLMConfig = DEEPSEEK_CONFIG):
++        self.llm = create_llm(config)
+
+     def verify(self,original_text:str,expanded_text:str,standardization:dict):
+         #检验缩写扩展是否可信
+```

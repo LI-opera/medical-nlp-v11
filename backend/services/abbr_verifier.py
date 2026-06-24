@@ -1,7 +1,8 @@
 import json
 import os
 from dotenv import load_dotenv
-from langchain_deepseek import ChatDeepSeek
+from utils.llm_config import DEEPSEEK_CONFIG, LLMConfig
+from utils.llm_factory import create_llm
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(CURRENT_DIR)
@@ -14,17 +15,8 @@ class ABBVerifier:
     医学缩写扩展校验器：
     作用：判断LLM扩写后的文本是否保持愿意，并且是否能被后续SNOMED标准化结果支持
     """
-    def __init__(self):
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY is not set.")
-        self.llm = ChatDeepSeek(
-            model="deepseek-chat",
-            api_key=api_key,
-            temperature=0,
-            #如果调用 DeepSeek API 失败，最多自动重试 2 次。
-            max_retries=2
-        )
+    def __init__(self, config: LLMConfig = DEEPSEEK_CONFIG):
+        self.llm = create_llm(config)
     
     def verify(self,original_text:str,expanded_text:str,standardization:dict):
         #检验缩写扩展是否可信
