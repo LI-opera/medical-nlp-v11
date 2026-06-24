@@ -237,7 +237,7 @@ index ad4722a..67ab2ca 100644
 +++ b/backend/services/abbr_service.py
 @@ -639,6 +639,15 @@ class ABBRService:
              ]
- 
+
              best = coverage.get("best_expansion")
 +
 +            # 批次3(攻弃权):对 fallback(非词典)缩写收紧
@@ -2592,9 +2592,9 @@ index 5f7879f..1164b23 100644
 --- a/backend/api/main.py
 +++ b/backend/api/main.py
 @@ -168,13 +168,12 @@ def expand_abbreviation_simple(
- 
+
      final_result = result.get("final_result", {}) or {}
- 
+
 -    # 从每个 LOCKED_OK mapping 的 SNOMED 检索结果取 top-1 概念,作为标准化编码出口
 +    # 只输出 verify 判定为忠实标准化的 SNOMED 概念
      standardized_entities = []
@@ -2635,12 +2635,12 @@ index b93aaa0..37fbece 100644
 -                "changed": True,
 +                "std_concept": None,
              })
- 
+
          current_abbreviation_candidates = candidate_infos
 @@ -184,29 +176,27 @@ class ABBRService:
              if not pending:
                  break
- 
+
 -            # 增量检索:只对本轮 expansion 变过的 PENDING 重检索
 +            # 每个 PENDING mapping 检索一次 SNOMED 候选
              for s in pending:
@@ -2684,13 +2684,13 @@ index b93aaa0..37fbece 100644
 +                        "rerank_score": md.get("rerank_score"),
 +                    })
 +                s["std_cache"] = cand
- 
+
              # 只对 PENDING 做 verify(LOCKED_OK 冻结不复验)
              mapping_standardizations = [
 @@ -224,27 +214,36 @@ class ABBRService:
              )
              validations = verification.get("mapping_validations", [])
- 
+
 -            def _find_validation(abbr):
 +            def _find_validation(state):
                  for v in validations:
@@ -2701,7 +2701,7 @@ index b93aaa0..37fbece 100644
 +                    ):
                          return v
                  return None
- 
+
 -            # 逐个 PENDING 判定:通过→LOCKED_OK;不过→换未试候选 or 弃权
 +            # 扩写由 coverage 决定；verify 只选择忠实 SNOMED 概念或弃码
              for s in pending:
@@ -2737,7 +2737,7 @@ index b93aaa0..37fbece 100644
 +                    and s["expansion"] == item["expansion"]
 +                )
 +                item["chosen_concept"] = state["std_concept"]
- 
+
              # 用未弃权的 mapping 重新确定性拼句
              current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
 @@ -300,6 +299,7 @@ class ABBRService:
@@ -2755,7 +2755,7 @@ index 09dc1b4..e502eb7 100644
 @@ -86,122 +86,101 @@ class ABBVerifier:
                  "issues": ["invalid_json"]
              }
-     
+
 -    def verify_mappings(self,original_text:str,expanded_text:str,mapping_standardizations:list[dict]):
 -        #逐个校验abbreviation->expansion是否合理,同时校验整句扩写是否保持原意
 -        prompt = f"""
@@ -2780,7 +2780,7 @@ index 09dc1b4..e502eb7 100644
 +                    for index, candidate in enumerate(mapping.get("candidates") or [])
 +                ],
 +            })
- 
+
 -        1. Sentence-level validity:
 -        Check whether the expanded clinical text preserves the meaning of the original clinical text.
 -
@@ -2820,11 +2820,11 @@ index 09dc1b4..e502eb7 100644
 +
 +        Original clinical text (context only):
          {original_text}
- 
+
 -        Expanded clinical text:
 +        Expanded clinical text (context only):
          {expanded_text}
- 
+
 -        Abbreviation mappings with SNOMED candidates:
 -        {json.dumps(mapping_standardizations, ensure_ascii=False, indent=2)}
 -
@@ -2869,7 +2869,7 @@ index 09dc1b4..e502eb7 100644
 -        Do not include explanations outside the JSON.
 +        Abbreviation expansions and indexed SNOMED candidates:
 +        {json.dumps(indexed_mappings, ensure_ascii=False, indent=2)}
- 
+
          Return JSON in exactly this structure:
          {{
 -        "sentence_validity": {{
@@ -3100,7 +3100,7 @@ index cf66ff9..41aaf13 100644
 @@ -106,6 +106,19 @@ def run_benchmark():
          )
          final_correct = is_correct and text_check["correct"]
- 
+
 +        if not final_correct:
 +            try:
 +                from services.error_collector import collect_gold_mismatch
@@ -3116,7 +3116,7 @@ index cf66ff9..41aaf13 100644
 +
          if final_correct:
              correct += 1
- 
+
 diff --git a/backend/evaluation/run_concept_benchmark.py b/backend/evaluation/run_concept_benchmark.py
 index 295d006..30b1fe3 100644
 --- a/backend/evaluation/run_concept_benchmark.py
@@ -3160,7 +3160,7 @@ index 06309e3..0de7534 100644
 @@ -379,6 +384,12 @@ class ABBRService:
              ],
          }
- 
+
 +        try:
 +            from services.error_collector import collect_unresolved
 +            collect_unresolved(text, records)
@@ -3325,18 +3325,18 @@ index 4e685b5..295d006 100644
 +++ b/backend/evaluation/run_concept_benchmark.py
 @@ -18,8 +18,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
  sys.path.append(str(BACKEND_DIR))
- 
+
  from evaluation.concept_benchmark_cases import CONCEPT_BENCHMARK_CASES
 -from services.medical_retriever import MedicalRetriever
 -from services.abbr_verifier import ABBVerifier
 +from services.abbr_service import ABBRService
- 
+
  TOP_K = 10            # 与主链路状态机 docs[:10] 一致
  SCORE_TH = 0.6
 @@ -29,26 +28,6 @@ def _norm(s):
      return s.strip().lower() if isinstance(s, str) else s
- 
- 
+
+
 -def retrieve_top(retriever, query):
 -    docs = retriever.retrieve(query=query, top_k=TOP_K, domain_filter=None, score_threshold=SCORE_TH)
 -    return [d["metadata"] for d in docs]
@@ -3361,16 +3361,16 @@ index 4e685b5..295d006 100644
      """返回 (passed, canonical_hit, verdict_str)。"""
      if case["expect"] == "abstain":
 @@ -79,15 +58,51 @@ def show(rows, title):
- 
- 
+
+
  def main():
 -    retriever = MedicalRetriever()
 -    verifier = ABBVerifier()
 +    svc = ABBRService()
- 
+
      conf_total = conf_pass = conf_canon = 0
      rows_conf, rows_unconf = [], []
- 
+
      for case in CONCEPT_BENCHMARK_CASES:
 -        cands = retrieve_top(retriever, case["expansion"])
 -        chosen, faithful, reason = verify_pick(verifier, case["label"], case["expansion"], cands)
@@ -3423,7 +3423,7 @@ index 486d7f0..52ab61d 100644
 @@ -94,6 +94,69 @@ class ABBRService:
              result = result[:start] + expansion + result[end:]
          return result
- 
+
 +    def _reflect_refine_standardization(self, s, original_text, expanded_text):
 +        """batch10 标准化反思:非精确同名(或弃码)时,换同义词重检索一次。
 +        verify 在更全候选池中重选;只升级不强压,原候选仍在池中可回退。
@@ -3493,7 +3493,7 @@ index 486d7f0..52ab61d 100644
 @@ -237,6 +300,10 @@ class ABBRService:
                  s["std_concept"] = s["std_cache"][chosen_index] if valid_index else None
                  s["status"] = "LOCKED_OK"
- 
+
 +            # batch10: 标准化反思精炼。只对本轮 pending 触发;非精确同名/弃码才会换词重检索。
 +            for s in pending:
 +                self._reflect_refine_standardization(s, text, current_expanded_text)
@@ -3508,7 +3508,7 @@ index c839c3f..e0e90ef 100644
 @@ -207,6 +207,51 @@ class ABBVerifier:
                  "raw_output": content
              }
- 
+
 +    def propose_requeries(self, expansion: str, current_concept, seen_concepts):
 +        """标准化反思:为 expansion 提出最多 2 个【同义/规范检索词】。
 +        以图检回比 current_concept 更标准的 SNOMED 概念。
@@ -3818,7 +3818,7 @@ index e502eb7..c839c3f 100644
 @@ -114,21 +114,41 @@ class ABBVerifier:
          Your job is NOT to re-judge whether the abbreviation expansion is correct.
          That decision has already been made by the abbreviation coverage stage.
- 
+
 -        Your job is to pick which candidate concept is a FAITHFUL standardization of
 -        the expansion:
 -
@@ -3886,18 +3886,18 @@ index 4e685b5..295d006 100644
 +++ b/backend/evaluation/run_concept_benchmark.py
 @@ -18,8 +18,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
  sys.path.append(str(BACKEND_DIR))
- 
+
  from evaluation.concept_benchmark_cases import CONCEPT_BENCHMARK_CASES
 -from services.medical_retriever import MedicalRetriever
 -from services.abbr_verifier import ABBVerifier
 +from services.abbr_service import ABBRService
- 
+
  TOP_K = 10            # 与主链路状态机 docs[:10] 一致
  SCORE_TH = 0.6
 @@ -29,26 +28,6 @@ def _norm(s):
      return s.strip().lower() if isinstance(s, str) else s
- 
- 
+
+
 -def retrieve_top(retriever, query):
 -    docs = retriever.retrieve(query=query, top_k=TOP_K, domain_filter=None, score_threshold=SCORE_TH)
 -    return [d["metadata"] for d in docs]
@@ -3922,16 +3922,16 @@ index 4e685b5..295d006 100644
      """返回 (passed, canonical_hit, verdict_str)。"""
      if case["expect"] == "abstain":
 @@ -79,15 +58,51 @@ def show(rows, title):
- 
- 
+
+
  def main():
 -    retriever = MedicalRetriever()
 -    verifier = ABBVerifier()
 +    svc = ABBRService()
- 
+
      conf_total = conf_pass = conf_canon = 0
      rows_conf, rows_unconf = [], []
- 
+
      for case in CONCEPT_BENCHMARK_CASES:
 -        cands = retrieve_top(retriever, case["expansion"])
 -        chosen, faithful, reason = verify_pick(verifier, case["label"], case["expansion"], cands)
@@ -3984,7 +3984,7 @@ index 486d7f0..52ab61d 100644
 @@ -94,6 +94,69 @@ class ABBRService:
              result = result[:start] + expansion + result[end:]
          return result
- 
+
 +    def _reflect_refine_standardization(self, s, original_text, expanded_text):
 +        """batch10 标准化反思:非精确同名(或弃码)时,换同义词重检索一次。
 +        verify 在更全候选池中重选;只升级不强压,原候选仍在池中可回退。
@@ -4054,7 +4054,7 @@ index 486d7f0..52ab61d 100644
 @@ -237,6 +300,10 @@ class ABBRService:
                  s["std_concept"] = s["std_cache"][chosen_index] if valid_index else None
                  s["status"] = "LOCKED_OK"
- 
+
 +            # batch10: 标准化反思精炼。只对本轮 pending 触发;非精确同名/弃码才会换词重检索。
 +            for s in pending:
 +                self._reflect_refine_standardization(s, text, current_expanded_text)
@@ -4069,7 +4069,7 @@ index c839c3f..e0e90ef 100644
 @@ -207,6 +207,51 @@ class ABBVerifier:
                  "raw_output": content
              }
- 
+
 +    def propose_requeries(self, expansion: str, current_concept, seen_concepts):
 +        """标准化反思:为 expansion 提出最多 2 个【同义/规范检索词】。
 +        以图检回比 current_concept 更标准的 SNOMED 概念。
@@ -4180,7 +4180,7 @@ index 52ab61d..06309e3 100644
 @@ -157,52 +157,60 @@ class ABBRService:
                  s["std_cache"] = new_cands
                  s["std_concept"] = refined
- 
+
 -    def expand_verify_with_retry(self,text:str,max_retries:int=2):
 -        """
 -        缩写扩展 + 标准化 + 校验 + Reflection 重试。
@@ -4205,7 +4205,7 @@ index 52ab61d..06309e3 100644
 +        current_abbreviation_candidates = candidate_infos
 +        mapping_support_results = []
 +        standardization_result = None
- 
+
 -        # —— 建 per-mapping 状态机条目 ——
 -        states = []
 +        # Unified per-abbreviation record: one shape from retrieval to output.
@@ -4246,23 +4246,23 @@ index 52ab61d..06309e3 100644
 +                    },
 +                }
 +            records.append(rec)
- 
+
 -        current_abbreviation_candidates = candidate_infos
 -        mapping_support_results = []
 -        standardization_result = None
 +        def _expanded(recs):
 +            return [r for r in recs if r["expansion"]]
- 
+
 -        def _visible(state_list):
 -            # 进入句子/检索的 mapping:未弃权的(LOCKED_OK + PENDING)
 -            return [s for s in state_list if s["status"] != "LOCKED_ABSTAIN"]
 +        def _visible(recs):
 +            # Visible in text/retrieval: expanded and not abstained.
 +            return [r for r in recs if r["expansion"] and r["status"] != "ABSTAIN"]
- 
+
 -        current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
 +        current_expanded_text = self._build_expanded_text_deterministic(text, _visible(records))
- 
+
 -        # —— 早停:召回阶段没选出任何扩写 ——
 -        if not states:
 +        # Early stop: no abbreviation produced an expansion (coverage_failed).
@@ -4291,7 +4291,7 @@ index 52ab61d..06309e3 100644
 -                "reason": "No valid abbreviation expansion found. Candidate coverage failed."
 +                "reason": "No valid abbreviation expansion found. Candidate coverage failed.",
              }
- 
+
 -        # —— 重试循环:per-mapping 失败隔离 + 增量重算 ——
 +        # Retry loop: per-mapping failure isolation.
          for attempt_index in range(max_retries + 1):
@@ -4299,7 +4299,7 @@ index 52ab61d..06309e3 100644
 +            pending = [r for r in records if r["status"] == "PENDING"]
              if not pending:
                  break
- 
+
 -            # 每个 PENDING mapping 检索一次 SNOMED 候选
 -            for s in pending:
 +            # Retrieve SNOMED candidates for each PENDING record.
@@ -4336,7 +4336,7 @@ index 52ab61d..06309e3 100644
 +                    }
 +                    for d in docs[:10]
 +                ]
- 
+
 -            # 只对 PENDING 做 verify(LOCKED_OK 冻结不复验)
              mapping_standardizations = [
 -                {
@@ -4355,7 +4355,7 @@ index 52ab61d..06309e3 100644
                  mapping_standardizations=mapping_standardizations,
              )
              validations = verification.get("mapping_validations", [])
- 
+
 -            def _find_validation(state):
 +            def _find_validation(rec):
                  for v in validations:
@@ -4366,7 +4366,7 @@ index 52ab61d..06309e3 100644
 +                    if v.get("abbreviation") == rec["abbreviation"] and v.get("expansion") == rec["expansion"]:
                          return v
                  return None
- 
+
 -            # 扩写由 coverage 决定；verify 只选择忠实 SNOMED 概念或弃码
 -            for s in pending:
 -                v = _find_validation(s)
@@ -4396,7 +4396,7 @@ index 52ab61d..06309e3 100644
 +                        "reason": (v.get("reason") if v else None) or "no faithful SNOMED concept among retrieved candidates",
 +                        "evidence": {"retrieved_top": [c.get("concept_name") for c in (r["std_cache"] or [])[:5]]},
 +                    }
- 
+
 -            # batch10: 标准化反思精炼。只对本轮 pending 触发;非精确同名/弃码才会换词重检索。
 -            for s in pending:
 -                self._reflect_refine_standardization(s, text, current_expanded_text)
@@ -4406,7 +4406,7 @@ index 52ab61d..06309e3 100644
 +                if r.get("std_concept") and r["status"] == "WITHHELD":
 +                    r["status"] = "CODED"
 +                    r["failure"] = None
- 
+
              for item in mapping_standardizations:
 -                state = next(
 -                    s for s in pending
@@ -4418,11 +4418,11 @@ index 52ab61d..06309e3 100644
                  )
 -                item["chosen_concept"] = state["std_concept"]
 +                item["chosen_concept"] = rec["std_concept"]
- 
+
 -            # 用未弃权的 mapping 重新确定性拼句
 -            current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
 +            current_expanded_text = self._build_expanded_text_deterministic(text, _visible(records))
- 
+
 -            # 本轮留痕
              attempts.append({
                  "attempt": attempt_index + 1,
@@ -4446,7 +4446,7 @@ index 52ab61d..06309e3 100644
 @@ -336,24 +338,26 @@ class ABBRService:
                  "mapping_support_results": mapping_support_results,
              })
- 
+
 -        # —— 循环结束:到达兜底次数仍 PENDING 的 → 安全弃权 ——
 -        for s in states:
 -            if s["status"] == "PENDING":
@@ -4459,7 +4459,7 @@ index 52ab61d..06309e3 100644
 +                    "type": "EXPANSION_ABSTAIN", "stage": "coverage",
 +                    "reason": "expansion candidates exhausted without a lock", "evidence": {},
 +                }
- 
+
 -        # —— 终态出口 ——
 -        current_expanded_text = self._build_expanded_text_deterministic(text, _visible(states))
 -        locked_ok = [s for s in states if s["status"] == "LOCKED_OK"]
@@ -4482,7 +4482,7 @@ index 52ab61d..06309e3 100644
 +        success = len(_expanded(records)) > 0 and all(
 +            r["status"] in ("CODED", "WITHHELD") for r in _expanded(records)
 +        )
- 
+
          final_result = {
              "attempt": len(attempts),
 @@ -362,19 +366,16 @@ class ABBRService:
@@ -4608,7 +4608,7 @@ index cf66ff9..41aaf13 100644
 @@ -106,6 +106,19 @@ def run_benchmark():
          )
          final_correct = is_correct and text_check["correct"]
- 
+
 +        if not final_correct:
 +            try:
 +                from services.error_collector import collect_gold_mismatch
@@ -4624,7 +4624,7 @@ index cf66ff9..41aaf13 100644
 +
          if final_correct:
              correct += 1
- 
+
 diff --git a/backend/evaluation/run_concept_benchmark.py b/backend/evaluation/run_concept_benchmark.py
 index 295d006..30b1fe3 100644
 --- a/backend/evaluation/run_concept_benchmark.py
@@ -4668,7 +4668,7 @@ index 06309e3..0de7534 100644
 @@ -379,6 +384,12 @@ class ABBRService:
              ],
          }
- 
+
 +        try:
 +            from services.error_collector import collect_unresolved
 +            collect_unresolved(text, records)
@@ -4775,293 +4775,7 @@ index 0000000..5468947
 +        pass
 ```
 
-
-## 2026-06-23 - Batch 12: offline LLM error triage
-
-### Purpose
-
-- Add a standalone offline triage tool for the unified error JSONL created in batch11B.
-- Deterministically cluster error records, then ask DeepSeek for grounded root-cause hypotheses.
-- Keep triage strictly outside the main pipeline, scoring, API, and benchmark mutation path.
-- Make the report explicit that LLM output is hypothesis-only: humans review, benchmark adjudicates.
-
-### Changed files
-
-- `backend/evaluation/error_triage.py`
-
-### Implementation notes
-
-- Reads `backend/logs/unresolved_cases.jsonl`.
-- Clusters records by `(failure_type, stage)`.
-- Uses `ChatDeepSeek(model="deepseek-chat", temperature=0, max_retries=2)` and `DEEPSEEK_API_KEY`, matching the project's existing LLM client style.
-- For each cluster, asks for 1-3 patterns with:
-  - root-cause hypothesis
-  - pipeline lever
-  - cited supporting record indices
-  - confidence
-  - how to verify
-  - fix sketch
-  - candidate gold-case drafts
-- Enforces low confidence when fewer than 3 supporting records back a pattern.
-- Writes outputs under ignored `backend/logs/triage/`:
-  - `error_triage_report.md`
-  - `candidate_gold_cases.json`
-- Does not edit gold, benchmark cases, production code, or API behavior.
-
-### Verification
-
-- `.venv\Scripts\python.exe -m compileall backend/evaluation/error_triage.py`: passed.
-- `git diff --check -- backend/evaluation/error_triage.py`: passed.
-- Confirmed `backend/logs/unresolved_cases.jsonl` existed with 22 records from batch11B.
-- `.venv\Scripts\python.exe backend/evaluation/error_triage.py`: passed.
-  - Generated `backend/logs/triage/error_triage_report.md`.
-  - Generated `backend/logs/triage/candidate_gold_cases.json` with 17 draft records.
-- Report spot-check confirmed:
-  - explicit "LLM hypotheses; benchmark adjudicates" framing;
-  - clusters include levers, supporting records, how-to-verify, and fix sketches;
-  - low-evidence patterns are marked low confidence.
-- `backend/logs/` remains ignored and generated triage outputs were not staged.
-
-### Rollback / troubleshooting notes
-
-- This batch is isolated to one offline script. Reverting this commit removes the triage tool without touching the main pipeline.
-- If triage JSON parsing fails, the script returns a low-confidence fallback pattern instead of crashing the pipeline.
-- If no report is generated, first check `backend/logs/unresolved_cases.jsonl` exists and `DEEPSEEK_API_KEY` is set.
-- Do not directly apply `candidate_gold_cases.json`; it is only a draft queue for human review and benchmark adjudication.
-
-### git diff (excluding this log file)
-
-```diff
-diff --git a/backend/evaluation/error_triage.py b/backend/evaluation/error_triage.py
-new file mode 100644
-index 0000000..a42ccd3
---- /dev/null
-+++ b/backend/evaluation/error_triage.py
-@@ -0,0 +1,221 @@
-+"""
-+Offline LLM error triage.
-+
-+Reads backend/logs/unresolved_cases.jsonl, clusters records deterministically,
-+then asks an LLM for grounded root-cause hypotheses, levers, cited records,
-+verification plans, fix sketches, and candidate gold-case drafts.
-+
-+Guardrails:
-+1. Offline only: this script is not imported by the main pipeline, API, or scoring.
-+2. LLM proposes hypotheses only. It never mutates code, benchmark gold, or logs used
-+   for scoring. Human review plus benchmark adjudication decides any follow-up.
-+3. Clusters with fewer than 3 records are low-confidence by default; do not treat
-+   thin evidence as a pattern.
-+
-+Run:
-+    python backend/evaluation/error_triage.py
-+
-+Requires:
-+    backend/logs/unresolved_cases.jsonl
-+    DEEPSEEK_API_KEY
-+"""
-+import json
-+import os
-+import sys
-+from collections import defaultdict
-+from pathlib import Path
-+
-+from dotenv import load_dotenv
-+from langchain_deepseek import ChatDeepSeek
-+
-+
-+BACKEND_DIR = Path(__file__).resolve().parents[1]
-+sys.path.append(str(BACKEND_DIR))
-+load_dotenv(BACKEND_DIR / ".env", override=True)
-+
-+LOG = BACKEND_DIR / "logs" / "unresolved_cases.jsonl"
-+OUT_DIR = BACKEND_DIR / "logs" / "triage"
-+REPORT = OUT_DIR / "error_triage_report.md"
-+CANDIDATE_GOLD = OUT_DIR / "candidate_gold_cases.json"
-+MIN_CONFIDENT = 3
-+
-+LEVERS = "dictionary | lib_coverage | retrieval | verify_rubric | gold_labeling | other"
-+
-+
-+def load_records():
-+    if not LOG.exists():
-+        return []
-+    return [
-+        json.loads(line)
-+        for line in LOG.read_text(encoding="utf-8").splitlines()
-+        if line.strip()
-+    ]
-+
-+
-+def cluster(records):
-+    groups = defaultdict(list)
-+    for record in records:
-+        groups[(record.get("failure_type"), record.get("stage"))].append(record)
-+    return groups
-+
-+
-+def make_llm():
-+    api_key = os.getenv("DEEPSEEK_API_KEY")
-+    if not api_key:
-+        raise ValueError("DEEPSEEK_API_KEY is not set.")
-+    return ChatDeepSeek(
-+        model="deepseek-chat",
-+        api_key=api_key,
-+        temperature=0,
-+        max_retries=2,
-+    )
-+
-+
-+def _clean_json_content(content):
-+    return content.strip().replace("```json", "").replace("```", "").strip()
-+
-+
-+def analyze_cluster(model, failure_type, stage, records):
-+    sample = records[:20]
-+    payload = [
-+        {
-+            "i": index,
-+            "abbreviation": record.get("abbreviation"),
-+            "expansion": record.get("expansion"),
-+            "source": record.get("source"),
-+            "reason": record.get("reason"),
-+            "evidence": record.get("evidence"),
-+        }
-+        for index, record in enumerate(sample)
-+    ]
-+    prompt = f"""You are a triage analyst for a medical-abbreviation NLP pipeline.
-+
-+You are given a CLUSTER of failure records:
-+- failure_type: {failure_type}
-+- stage: {stage}
-+
-+Map each root cause to EXACTLY one pipeline lever:
-+  {LEVERS}
-+
-+Lever definitions:
-+- dictionary: abbreviation/expansion dictionary missing an entry or sense
-+- lib_coverage: the SNOMED concept library lacks a faithful concept
-+- retrieval: retrieval/rerank/window buried or missed a concept that exists
-+- verify_rubric: the verify selection/abstain rule chose wrong or over-withheld
-+- gold_labeling: the benchmark gold label itself looks wrong or too strict
-+- other: none of the above
-+
-+Records are indexed by i:
-+{json.dumps(payload, ensure_ascii=False, indent=2)}
-+
-+Identify 1-3 root-cause PATTERNS. For each pattern return:
-+- root_cause: one sentence, grounded ONLY in these records
-+- lever: one of the allowed levers
-+- supporting_records: list of real record indices i that support it
-+- confidence: "high" | "medium" | "low"
-+  Use "low" if fewer than 3 records support the pattern.
-+- how_to_verify: concrete benchmark case or measurement that would confirm/refute it
-+- fix_sketch: candidate fix direction mapped to the lever; this is only a hypothesis
-+- gold_case_drafts: draft benchmark cases that would harden against this, may be []
-+  For stage "expansion":
-+    {{"target":"main","text":"...","expected_mappings":[{{"abbreviation":"..","expansion":".."}}]}}
-+  For stage "standardization":
-+    {{"target":"concept","label":"..","expansion":"..","prefer":"..","accept":[".."]}}
-+
-+Do NOT invent facts beyond the records.
-+If evidence is thin, say so via low confidence.
-+Return raw valid JSON only in this shape:
-+{{"patterns":[ ... ]}}"""
-+    try:
-+        response = model.invoke(prompt)
-+        content = _clean_json_content(response.content)
-+        parsed = json.loads(content)
-+        patterns = parsed.get("patterns", [])
-+        return patterns if isinstance(patterns, list) else []
-+    except Exception as exc:
-+        return [{
-+            "root_cause": f"LLM or JSON parsing failed: {exc}",
-+            "lever": "other",
-+            "supporting_records": [],
-+            "confidence": "low",
-+            "how_to_verify": "",
-+            "fix_sketch": "",
-+            "gold_case_drafts": [],
-+        }]
-+
-+
-+def _markdown_list(value):
-+    if value is None:
-+        return ""
-+    if isinstance(value, (dict, list)):
-+        return json.dumps(value, ensure_ascii=False)
-+    return str(value)
-+
-+
-+def main():
-+    records = load_records()
-+    if not records:
-+        print(f"No error log found or log is empty: {LOG}")
-+        print("Run `python backend/evaluation/run_benchmark.py` after batch11B first.")
-+        return
-+
-+    groups = cluster(records)
-+    model = make_llm()
-+    OUT_DIR.mkdir(parents=True, exist_ok=True)
-+
-+    lines = [
-+        "# Error Triage Report (LLM hypotheses; benchmark adjudicates)",
-+        "",
-+        f"> Records: {len(records)}. Clusters: {len(groups)}.",
-+        "> The following items are hypotheses only. Do not auto-change code or gold.",
-+        "> Human review plus benchmark evidence decides any follow-up.",
-+    ]
-+    all_drafts = []
-+
-+    sorted_groups = sorted(groups.items(), key=lambda item: (-len(item[1]), str(item[0])))
-+    for (failure_type, stage), group_records in sorted_groups:
-+        lines.append("")
-+        lines.append(f"## Cluster: {failure_type} / {stage} ({len(group_records)} records)")
-+        if len(group_records) < MIN_CONFIDENT:
-+            lines.append(
-+                f"> Low-confidence cluster by size: fewer than {MIN_CONFIDENT} records. "
-+                "Treat as a candidate signal, not a pattern."
-+            )
-+
-+        patterns = analyze_cluster(model, failure_type, stage, group_records)
-+        for pattern_index, pattern in enumerate(patterns, start=1):
-+            supporting = pattern.get("supporting_records") or []
-+            if len(supporting) < MIN_CONFIDENT:
-+                pattern["confidence"] = "low"
-+
-+            lines.append("")
-+            lines.append(f"### Pattern {pattern_index}")
-+            lines.append(f"- Root-cause hypothesis: {_markdown_list(pattern.get('root_cause'))}")
-+            lines.append(f"- Lever: `{_markdown_list(pattern.get('lever'))}`")
-+            lines.append(f"- Confidence: `{_markdown_list(pattern.get('confidence'))}`")
-+            lines.append(f"- Supporting records in cluster: `{_markdown_list(supporting)}`")
-+            lines.append(f"- How to verify: {_markdown_list(pattern.get('how_to_verify'))}")
-+            lines.append(f"- Fix sketch (hypothesis only): {_markdown_list(pattern.get('fix_sketch'))}")
-+
-+            drafts = pattern.get("gold_case_drafts") or []
-+            if drafts:
-+                lines.append(
-+                    f"- Candidate gold-case drafts: {len(drafts)} "
-+                    f"(see `{CANDIDATE_GOLD.name}`; use only after human+benchmark adjudication)"
-+                )
-+                all_drafts.extend(drafts)
-+
-+    REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
-+    CANDIDATE_GOLD.write_text(
-+        json.dumps(all_drafts, ensure_ascii=False, indent=2) + "\n",
-+        encoding="utf-8",
-+    )
-+
-+    print("Wrote triage outputs:")
-+    print(f"  report: {REPORT}")
-+    print(f"  candidate gold drafts: {CANDIDATE_GOLD} ({len(all_drafts)} records)")
-+    print("Reminder: LLM proposes; benchmark adjudicates. No code or gold was modified.")
-+
-+
-+if __name__ == "__main__":
-+    main()
-```
-
-## 2026-06-23 批次12 LLM错误Triage 中文补记
+## 2026-06-23 批次12 LLM错误Triage
 
 ### 修改背景
 
@@ -5321,4 +5035,411 @@ index 0000000..a42ccd3
 +
 +if __name__ == "__main__":
 +    main()
+```
+
+## 2026-06-24 批次13：错误源全收、确定性 expected 打标、读时筛选
+
+### 修改目的
+
+本批次修正错误日志被“乱码负例 / 正确弃权”污染后影响 analyze/triage 的问题。策略不是在写入端硬删错误源，而是改成：
+
+- 写入端全收，不丢原始错误记录。
+- 有 benchmark gold 时，用确定性规则给每条记录打 `expected` 标签。
+- `expected=True` 表示该结果符合 gold 预期，例如 gold 本来就不要求扩写的正确弃权。
+- `expected=False` 表示与 gold 不符的真错误。
+- `expected=None` 表示无可判定 gold 或概念层无法在 main gold 中判定。
+- analyze/triage 默认只读取 `expected is not True` 的记录；需要全量时用 `--all` 或直接看原始 JSONL。
+
+### 修改文件
+
+- `backend/services/error_collector.py`
+- `backend/evaluation/run_benchmark.py`
+- `backend/evaluation/run_concept_benchmark.py`
+- `backend/evaluation/analyze_errors.py`
+- `backend/evaluation/error_triage.py`
+
+### 实现要点
+
+- `collect_unresolved()` 新增 `source`、`gold_abbrs` 参数，并在 benchmark gold 可用时写入 `expected`。
+- `collect_gold_mismatch()` 统一写入 `expected=False`。
+- benchmark 运行时设置 `ERROR_LOG_RUNTIME=0`，关闭 gold-blind 的运行时收集，改由 runner 在拿到 gold 后做 gold-aware 收集。
+- `run_benchmark.py` 在每个 case 得出 `final_result` 后，从 `mapping_states` 收集 failure，并用本 case 的 `expected_mappings` 生成 `gold_abbrs`。
+- `analyze_errors.py` 默认隐藏 `expected=True`，并新增 `--all` 查看全量。
+- `error_triage.py` 默认隐藏 `expected=True` 后再聚类，并在报告抬头说明隐藏数量；同时整理为中文报告输出。
+- 未修改 `backend/services/abbr_service.py` 主链路。
+
+### 验证结果
+
+- `python -m compileall backend/services backend/evaluation`：通过。
+- `git diff --check -- backend/services/error_collector.py backend/evaluation/run_benchmark.py backend/evaluation/run_concept_benchmark.py backend/evaluation/analyze_errors.py backend/evaluation/error_triage.py`：通过。
+- 清理旧 `backend/logs/unresolved_cases.jsonl` 后运行 `.venv\Scripts\python.exe backend/evaluation/run_benchmark.py`：通过，主 benchmark 保持 `71/74 = 0.9595`。
+- 新错误日志共 22 条：
+  - `expected=True`：11 条。
+  - `expected=False`：3 条。
+  - `expected=None`：8 条。
+- `analyze_errors.py` 默认分析 11 条，隐藏 11 条 `expected=True`。
+- `analyze_errors.py --all` 可查看 22 条全量，证明数据没有在写入端删除。
+- `error_triage.py`：通过，生成：
+  - `backend/logs/triage/error_triage_report.md`
+  - `backend/logs/triage/candidate_gold_cases.json`
+- triage 报告抬头显示已隐藏 11 条 `expected=True`，并且默认报告中未出现 `XYZ` / `QQQ` 这类正确弃权负例。
+
+### 回滚与排查提示
+
+- 如需回滚批次13，重点回退上述 5 个代码文件即可；`backend/logs/` 下产物是运行日志，不进入 Git。
+- 如果 analyze/triage 又出现大量正确弃权噪声，先检查 JSONL 中 `expected` 字段是否写入，以及是否误用了 `--all`。
+- 如果 benchmark 收集不到错误记录，检查 runner 是否设置了 `ERROR_LOG_RUNTIME=0`，并确认 runner 是否调用了 gold-aware 的 `collect_unresolved()`。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/evaluation/analyze_errors.py b/backend/evaluation/analyze_errors.py
+index 22427e8..bd6a41a 100644
+--- a/backend/evaluation/analyze_errors.py
++++ b/backend/evaluation/analyze_errors.py
+@@ -13,13 +13,21 @@ LOG = Path(__file__).resolve().parents[1] / "logs" / "unresolved_cases.jsonl"
+
+
+ def main():
++    import sys as _sys
++    show_all = "--all" in _sys.argv
+     if not LOG.exists():
+         print(f"No error log found: {LOG}")
+         print("Run `python backend/evaluation/run_benchmark.py` first.")
+         return
+
+-    recs = [json.loads(x) for x in LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
+-    print(f"Total error records: {len(recs)}\n")
++    raw = [json.loads(x) for x in LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
++    expected_ok = [r for r in raw if r.get("expected") is True]
++    recs = raw if show_all else [r for r in raw if r.get("expected") is not True]
++    mode = "--all full view" if show_all else "default filtered view; add --all to inspect all"
++    print(
++        f"Total error records: {len(raw)}; hidden expected=True records: "
++        f"{len(expected_ok)}; analyzing: {len(recs)} ({mode})\n"
++    )
+
+     def dist(title, counter, n=10):
+         print(title)
+diff --git a/backend/evaluation/error_triage.py b/backend/evaluation/error_triage.py
+index a42ccd3..a407f7c 100644
+--- a/backend/evaluation/error_triage.py
++++ b/backend/evaluation/error_triage.py
+@@ -1,21 +1,20 @@
+ """
+-Offline LLM error triage.
++离线 LLM 错误 Triage。
+
+-Reads backend/logs/unresolved_cases.jsonl, clusters records deterministically,
+-then asks an LLM for grounded root-cause hypotheses, levers, cited records,
+-verification plans, fix sketches, and candidate gold-case drafts.
++读取 backend/logs/unresolved_cases.jsonl，先按读时规则隐藏 expected=True
++的“预期内正确弃权”，再按 (failure_type, stage) 聚类，让 LLM 基于真实
++错误记录生成根因假设、杠杆、引用记录、验证方法、修复草图和候选 gold 用例。
+
+-Guardrails:
+-1. Offline only: this script is not imported by the main pipeline, API, or scoring.
+-2. LLM proposes hypotheses only. It never mutates code, benchmark gold, or logs used
+-   for scoring. Human review plus benchmark adjudication decides any follow-up.
+-3. Clusters with fewer than 3 records are low-confidence by default; do not treat
+-   thin evidence as a pattern.
++铁律：
++1. 离线：本脚本不被主链路 / API / benchmark 判分导入。
++2. LLM 只提出假设，绝不自动改代码、gold 或判分日志；一切由人工 + benchmark 裁决。
++3. 簇或支撑记录少于 3 条默认低置信，不能把噪声当模式。
++4. 写入端不删数据；expected=True 只在读取分析时默认隐藏，仍可从原日志回溯。
+
+-Run:
++运行：
+     python backend/evaluation/error_triage.py
+
+-Requires:
++依赖：
+     backend/logs/unresolved_cases.jsonl
+     DEEPSEEK_API_KEY
+ """
+@@ -85,6 +84,7 @@ def analyze_cluster(model, failure_type, stage, records):
+             "source": record.get("source"),
+             "reason": record.get("reason"),
+             "evidence": record.get("evidence"),
++            "expected": record.get("expected"),
+         }
+         for index, record in enumerate(sample)
+     ]
+@@ -112,8 +112,7 @@ Identify 1-3 root-cause PATTERNS. For each pattern return:
+ - root_cause: one sentence, grounded ONLY in these records
+ - lever: one of the allowed levers
+ - supporting_records: list of real record indices i that support it
+-- confidence: "high" | "medium" | "low"
+-  Use "low" if fewer than 3 records support the pattern.
++- confidence: "high" | "medium" | "low"  (use "low" if fewer than 3 records support it)
+ - how_to_verify: concrete benchmark case or measurement that would confirm/refute it
+ - fix_sketch: candidate fix direction mapped to the lever; this is only a hypothesis
+ - gold_case_drafts: draft benchmark cases that would harden against this, may be []
+@@ -122,8 +121,10 @@ Identify 1-3 root-cause PATTERNS. For each pattern return:
+   For stage "standardization":
+     {{"target":"concept","label":"..","expansion":"..","prefer":"..","accept":[".."]}}
+
+-Do NOT invent facts beyond the records.
+-If evidence is thin, say so via low confidence.
++IMPORTANT - LANGUAGE: write root_cause, how_to_verify, and fix_sketch in SIMPLIFIED CHINESE.
++Keep `lever` and `confidence` as the given English enum values. Keep JSON keys in English.
++
++Do NOT invent facts beyond the records. If evidence is thin, say so via low confidence.
+ Return raw valid JSON only in this shape:
+ {{"patterns":[ ... ]}}"""
+     try:
+@@ -134,7 +135,7 @@ Return raw valid JSON only in this shape:
+         return patterns if isinstance(patterns, list) else []
+     except Exception as exc:
+         return [{
+-            "root_cause": f"LLM or JSON parsing failed: {exc}",
++            "root_cause": f"LLM 调用或 JSON 解析失败: {exc}",
+             "lever": "other",
+             "supporting_records": [],
+             "confidence": "low",
+@@ -144,7 +145,7 @@ Return raw valid JSON only in this shape:
+         }]
+
+
+-def _markdown_list(value):
++def _md(value):
+     if value is None:
+         return ""
+     if isinstance(value, (dict, list)):
+@@ -155,31 +156,34 @@ def _markdown_list(value):
+ def main():
+     records = load_records()
+     if not records:
+-        print(f"No error log found or log is empty: {LOG}")
+-        print("Run `python backend/evaluation/run_benchmark.py` after batch11B first.")
++        print(f"未找到错误日志或日志为空: {LOG}")
++        print("先运行 `python backend/evaluation/run_benchmark.py` 产生错误记录。")
+         return
+
++    raw_n = len(records)
++    records = [r for r in records if r.get("expected") is not True]
++    hidden = raw_n - len(records)
++
+     groups = cluster(records)
+     model = make_llm()
+     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+     lines = [
+-        "# Error Triage Report (LLM hypotheses; benchmark adjudicates)",
++        "# 错误 Triage 报告（LLM 提假设，benchmark 裁决）",
+         "",
+-        f"> Records: {len(records)}. Clusters: {len(groups)}.",
+-        "> The following items are hypotheses only. Do not auto-change code or gold.",
+-        "> Human review plus benchmark evidence decides any follow-up.",
++        f"> 原始日志 {raw_n} 条；已自动隐藏 {hidden} 条 expected=True 的 gold 确定正确弃权；当前分析 {len(records)} 条、{len(groups)} 个簇。",
++        "> 全量数据仍保留在 unresolved_cases.jsonl 中，可回溯；这里的过滤只是读时决策。",
++        "> 以下全部是【假设草图】，不自动改代码或 gold；一切以人工复核 + benchmark 证据为准。",
+     ]
+     all_drafts = []
+
+     sorted_groups = sorted(groups.items(), key=lambda item: (-len(item[1]), str(item[0])))
+     for (failure_type, stage), group_records in sorted_groups:
+         lines.append("")
+-        lines.append(f"## Cluster: {failure_type} / {stage} ({len(group_records)} records)")
++        lines.append(f"## 簇：{failure_type} / {stage}（{len(group_records)} 条）")
+         if len(group_records) < MIN_CONFIDENT:
+             lines.append(
+-                f"> Low-confidence cluster by size: fewer than {MIN_CONFIDENT} records. "
+-                "Treat as a candidate signal, not a pattern."
++                f"> 样本少于 {MIN_CONFIDENT} 条，默认低置信；只能当线索看，不能当定论。"
+             )
+
+         patterns = analyze_cluster(model, failure_type, stage, group_records)
+@@ -189,19 +193,19 @@ def main():
+                 pattern["confidence"] = "low"
+
+             lines.append("")
+-            lines.append(f"### Pattern {pattern_index}")
+-            lines.append(f"- Root-cause hypothesis: {_markdown_list(pattern.get('root_cause'))}")
+-            lines.append(f"- Lever: `{_markdown_list(pattern.get('lever'))}`")
+-            lines.append(f"- Confidence: `{_markdown_list(pattern.get('confidence'))}`")
+-            lines.append(f"- Supporting records in cluster: `{_markdown_list(supporting)}`")
+-            lines.append(f"- How to verify: {_markdown_list(pattern.get('how_to_verify'))}")
+-            lines.append(f"- Fix sketch (hypothesis only): {_markdown_list(pattern.get('fix_sketch'))}")
++            lines.append(f"### 模式 {pattern_index}")
++            lines.append(f"- 根因假设：{_md(pattern.get('root_cause'))}")
++            lines.append(f"- 杠杆（改哪里）：`{_md(pattern.get('lever'))}`")
++            lines.append(f"- 置信：`{_md(pattern.get('confidence'))}`")
++            lines.append(f"- 支撑记录（簇内 index）：`{_md(supporting)}`")
++            lines.append(f"- 如何验证：{_md(pattern.get('how_to_verify'))}")
++            lines.append(f"- 修复方向（仅假设，先证后建）：{_md(pattern.get('fix_sketch'))}")
+
+             drafts = pattern.get("gold_case_drafts") or []
+             if drafts:
+                 lines.append(
+-                    f"- Candidate gold-case drafts: {len(drafts)} "
+-                    f"(see `{CANDIDATE_GOLD.name}`; use only after human+benchmark adjudication)"
++                    f"- 候选 gold 用例草稿：{len(drafts)} 条 "
++                    f"（见 `{CANDIDATE_GOLD.name}`；人工 + benchmark 裁决后才可用）"
+                 )
+                 all_drafts.extend(drafts)
+
+@@ -211,10 +215,10 @@ def main():
+         encoding="utf-8",
+     )
+
+-    print("Wrote triage outputs:")
+-    print(f"  report: {REPORT}")
+-    print(f"  candidate gold drafts: {CANDIDATE_GOLD} ({len(all_drafts)} records)")
+-    print("Reminder: LLM proposes; benchmark adjudicates. No code or gold was modified.")
++    print("已写出 triage 产物:")
++    print(f"  报告: {REPORT}")
++    print(f"  候选 gold 草稿: {CANDIDATE_GOLD}（共 {len(all_drafts)} 条）")
++    print("提醒: LLM 只提假设，benchmark 裁决；未改任何代码或 gold。")
+
+
+ if __name__ == "__main__":
+diff --git a/backend/evaluation/run_benchmark.py b/backend/evaluation/run_benchmark.py
+index 41aaf13..b3c7863 100644
+--- a/backend/evaluation/run_benchmark.py
++++ b/backend/evaluation/run_benchmark.py
+@@ -1,8 +1,11 @@
+ import sys
+ import json
+ import time
++import os
+ from pathlib import Path
+
++os.environ["ERROR_LOG_RUNTIME"] = "0"
++
+ BACKEND_DIR = Path(__file__).resolve().parents[1]
+ sys.path.append(str(BACKEND_DIR))
+ from evaluation.abbr_benchmark_cases import ABBR_BENCHMARK_CASES
+@@ -106,6 +109,22 @@ def run_benchmark():
+         )
+         final_correct = is_correct and text_check["correct"]
+
++        try:
++            from services.error_collector import collect_unresolved
++            gold_abbrs = {
++                (m.get("abbreviation") or "").upper()
++                for m in case["expected_mappings"]
++                if m.get("abbreviation")
++            }
++            collect_unresolved(
++                text=case["text"],
++                records=final_result.get("mapping_states", []),
++                source="benchmark:main",
++                gold_abbrs=gold_abbrs,
++            )
++        except Exception:
++            pass
++
+         if not final_correct:
+             try:
+                 from services.error_collector import collect_gold_mismatch
+diff --git a/backend/evaluation/run_concept_benchmark.py b/backend/evaluation/run_concept_benchmark.py
+index 30b1fe3..192a609 100644
+--- a/backend/evaluation/run_concept_benchmark.py
++++ b/backend/evaluation/run_concept_benchmark.py
+@@ -12,8 +12,11 @@ Concept 层 benchmark runner(标准化层评测)
+ 需要 Milvus + DeepSeek key(和 benchmark 同环境)。
+ """
+ import sys
++import os
+ from pathlib import Path
+
++os.environ["ERROR_LOG_RUNTIME"] = "0"
++
+ BACKEND_DIR = Path(__file__).resolve().parents[1]
+ sys.path.append(str(BACKEND_DIR))
+
+diff --git a/backend/services/error_collector.py b/backend/services/error_collector.py
+index 5468947..3447581 100644
+--- a/backend/services/error_collector.py
++++ b/backend/services/error_collector.py
+@@ -1,18 +1,16 @@
+-"""
+-Unified error store.
+-
+-Both runtime known-unknowns (record.failure) and benchmark gold mismatches are
+-written to one JSONL file. Collection is intentionally fail-safe: callers should
+-never let telemetry affect the main pipeline or scoring.
+-"""
+ import datetime
+ import json
++import os
+ from pathlib import Path
+
+
+ DEFAULT_LOG = Path(__file__).resolve().parents[1] / "logs" / "unresolved_cases.jsonl"
+
+
++def _runtime_on():
++    return os.getenv("ERROR_LOG_RUNTIME", "1") != "0"
++
++
+ def _now():
+     return datetime.datetime.now().isoformat(timespec="seconds")
+
+@@ -27,36 +25,51 @@ def _append(rows, log_path=None):
+             fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+-def collect_unresolved(text, records, log_path=None):
+-    """Collect runtime known-unknowns from unified records that carry failure."""
++def _expected_for(failure_type, abbreviation, gold_abbrs):
++    if gold_abbrs is None:
++        return None
++    abbr = (abbreviation or "").upper()
++    if failure_type in ("ABBR_NOT_EXPANDED", "EXPANSION_ABSTAIN", "COVERAGE_FAILED"):
++        return abbr not in gold_abbrs
++    return None
++
++
++def collect_unresolved(text, records, source="runtime", gold_abbrs=None, log_path=None):
++    """Collect all failure records and annotate gold-derived expected when available."""
+     try:
++        if source == "runtime" and not _runtime_on():
++            return
+         rows = []
+         for r in records or []:
+             f = r.get("failure")
+             if not f:
+                 continue
++            ftype = f.get("type")
+             rows.append({
+                 "ts": _now(),
+                 "text": text,
++                "source": source,
+                 "failure_type": f.get("type"),
+                 "stage": f.get("stage"),
+                 "abbreviation": r.get("abbreviation"),
+                 "expansion": r.get("expansion"),
+-                "source": r.get("source"),
+                 "reason": f.get("reason"),
+                 "evidence": f.get("evidence"),
++                "expected": _expected_for(ftype, r.get("abbreviation"), gold_abbrs),
+             })
+         if records and not any(r.get("expansion") for r in records):
++            whole = None if gold_abbrs is None else (len(gold_abbrs) == 0)
+             rows.append({
+                 "ts": _now(),
+                 "text": text,
++                "source": source,
+                 "failure_type": "COVERAGE_FAILED",
+                 "stage": "coverage",
+                 "abbreviation": None,
+                 "expansion": None,
+-                "source": None,
+                 "reason": "no abbreviation produced a usable expansion",
+                 "evidence": {"abbreviations": [r.get("abbreviation") for r in records]},
++                "expected": whole,
+             })
+         _append(rows, log_path)
+     except Exception:
+@@ -84,6 +97,7 @@ def collect_gold_mismatch(
+             "source": source,
+             "reason": "predicted != gold",
+             "evidence": {"expected": expected, "predicted": predicted},
++            "expected": False,
+         }], log_path)
+     except Exception:
+         pass
 ```

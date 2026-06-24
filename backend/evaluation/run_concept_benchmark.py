@@ -12,7 +12,10 @@ Concept 层 benchmark runner(标准化层评测)
 需要 Milvus + DeepSeek key(和 benchmark 同环境)。
 """
 import sys
+import os
 from pathlib import Path
+
+os.environ["ERROR_LOG_RUNTIME"] = "0"
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BACKEND_DIR))

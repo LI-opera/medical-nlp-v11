@@ -1,7 +1,10 @@
 import sys
 import json
 import time
+import os
 from pathlib import Path
+
+os.environ["ERROR_LOG_RUNTIME"] = "0"
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BACKEND_DIR))
@@ -105,6 +108,22 @@ def run_benchmark():
             expected_text_contains=case.get("expected_text_contains")
         )
         final_correct = is_correct and text_check["correct"]
+
+        try:
+            from services.error_collector import collect_unresolved
+            gold_abbrs = {
+                (m.get("abbreviation") or "").upper()
+                for m in case["expected_mappings"]
+                if m.get("abbreviation")
+            }
+            collect_unresolved(
+                text=case["text"],
+                records=final_result.get("mapping_states", []),
+                source="benchmark:main",
+                gold_abbrs=gold_abbrs,
+            )
+        except Exception:
+            pass
 
         if not final_correct:
             try:

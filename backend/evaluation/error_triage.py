@@ -1,21 +1,20 @@
 """
-Offline LLM error triage.
+离线 LLM 错误 Triage。
 
-Reads backend/logs/unresolved_cases.jsonl, clusters records deterministically,
-then asks an LLM for grounded root-cause hypotheses, levers, cited records,
-verification plans, fix sketches, and candidate gold-case drafts.
+读取 backend/logs/unresolved_cases.jsonl，先按读时规则隐藏 expected=True
+的“预期内正确弃权”，再按 (failure_type, stage) 聚类，让 LLM 基于真实
+错误记录生成根因假设、杠杆、引用记录、验证方法、修复草图和候选 gold 用例。
 
-Guardrails:
-1. Offline only: this script is not imported by the main pipeline, API, or scoring.
-2. LLM proposes hypotheses only. It never mutates code, benchmark gold, or logs used
-   for scoring. Human review plus benchmark adjudication decides any follow-up.
-3. Clusters with fewer than 3 records are low-confidence by default; do not treat
-   thin evidence as a pattern.
+铁律：
+1. 离线：本脚本不被主链路 / API / benchmark 判分导入。
+2. LLM 只提出假设，绝不自动改代码、gold 或判分日志；一切由人工 + benchmark 裁决。
+3. 簇或支撑记录少于 3 条默认低置信，不能把噪声当模式。
+4. 写入端不删数据；expected=True 只在读取分析时默认隐藏，仍可从原日志回溯。
 
-Run:
+运行：
     python backend/evaluation/error_triage.py
 
-Requires:
+依赖：
     backend/logs/unresolved_cases.jsonl
     DEEPSEEK_API_KEY
 """
@@ -85,6 +84,7 @@ def analyze_cluster(model, failure_type, stage, records):
             "source": record.get("source"),
             "reason": record.get("reason"),
             "evidence": record.get("evidence"),
+            "expected": record.get("expected"),
         }
         for index, record in enumerate(sample)
     ]
@@ -112,8 +112,7 @@ Identify 1-3 root-cause PATTERNS. For each pattern return:
 - root_cause: one sentence, grounded ONLY in these records
 - lever: one of the allowed levers
 - supporting_records: list of real record indices i that support it
-- confidence: "high" | "medium" | "low"
-  Use "low" if fewer than 3 records support the pattern.
+- confidence: "high" | "medium" | "low"  (use "low" if fewer than 3 records support it)
 - how_to_verify: concrete benchmark case or measurement that would confirm/refute it
 - fix_sketch: candidate fix direction mapped to the lever; this is only a hypothesis
 - gold_case_drafts: draft benchmark cases that would harden against this, may be []
@@ -122,8 +121,10 @@ Identify 1-3 root-cause PATTERNS. For each pattern return:
   For stage "standardization":
     {{"target":"concept","label":"..","expansion":"..","prefer":"..","accept":[".."]}}
 
-Do NOT invent facts beyond the records.
-If evidence is thin, say so via low confidence.
+IMPORTANT - LANGUAGE: write root_cause, how_to_verify, and fix_sketch in SIMPLIFIED CHINESE.
+Keep `lever` and `confidence` as the given English enum values. Keep JSON keys in English.
+
+Do NOT invent facts beyond the records. If evidence is thin, say so via low confidence.
 Return raw valid JSON only in this shape:
 {{"patterns":[ ... ]}}"""
     try:
@@ -134,7 +135,7 @@ Return raw valid JSON only in this shape:
         return patterns if isinstance(patterns, list) else []
     except Exception as exc:
         return [{
-            "root_cause": f"LLM or JSON parsing failed: {exc}",
+            "root_cause": f"LLM 调用或 JSON 解析失败: {exc}",
             "lever": "other",
             "supporting_records": [],
             "confidence": "low",
@@ -144,7 +145,7 @@ Return raw valid JSON only in this shape:
         }]
 
 
-def _markdown_list(value):
+def _md(value):
     if value is None:
         return ""
     if isinstance(value, (dict, list)):
@@ -155,31 +156,34 @@ def _markdown_list(value):
 def main():
     records = load_records()
     if not records:
-        print(f"No error log found or log is empty: {LOG}")
-        print("Run `python backend/evaluation/run_benchmark.py` after batch11B first.")
+        print(f"未找到错误日志或日志为空: {LOG}")
+        print("先运行 `python backend/evaluation/run_benchmark.py` 产生错误记录。")
         return
+
+    raw_n = len(records)
+    records = [r for r in records if r.get("expected") is not True]
+    hidden = raw_n - len(records)
 
     groups = cluster(records)
     model = make_llm()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     lines = [
-        "# Error Triage Report (LLM hypotheses; benchmark adjudicates)",
+        "# 错误 Triage 报告（LLM 提假设，benchmark 裁决）",
         "",
-        f"> Records: {len(records)}. Clusters: {len(groups)}.",
-        "> The following items are hypotheses only. Do not auto-change code or gold.",
-        "> Human review plus benchmark evidence decides any follow-up.",
+        f"> 原始日志 {raw_n} 条；已自动隐藏 {hidden} 条 expected=True 的 gold 确定正确弃权；当前分析 {len(records)} 条、{len(groups)} 个簇。",
+        "> 全量数据仍保留在 unresolved_cases.jsonl 中，可回溯；这里的过滤只是读时决策。",
+        "> 以下全部是【假设草图】，不自动改代码或 gold；一切以人工复核 + benchmark 证据为准。",
     ]
     all_drafts = []
 
     sorted_groups = sorted(groups.items(), key=lambda item: (-len(item[1]), str(item[0])))
     for (failure_type, stage), group_records in sorted_groups:
         lines.append("")
-        lines.append(f"## Cluster: {failure_type} / {stage} ({len(group_records)} records)")
+        lines.append(f"## 簇：{failure_type} / {stage}（{len(group_records)} 条）")
         if len(group_records) < MIN_CONFIDENT:
             lines.append(
-                f"> Low-confidence cluster by size: fewer than {MIN_CONFIDENT} records. "
-                "Treat as a candidate signal, not a pattern."
+                f"> 样本少于 {MIN_CONFIDENT} 条，默认低置信；只能当线索看，不能当定论。"
             )
 
         patterns = analyze_cluster(model, failure_type, stage, group_records)
@@ -189,19 +193,19 @@ def main():
                 pattern["confidence"] = "low"
 
             lines.append("")
-            lines.append(f"### Pattern {pattern_index}")
-            lines.append(f"- Root-cause hypothesis: {_markdown_list(pattern.get('root_cause'))}")
-            lines.append(f"- Lever: `{_markdown_list(pattern.get('lever'))}`")
-            lines.append(f"- Confidence: `{_markdown_list(pattern.get('confidence'))}`")
-            lines.append(f"- Supporting records in cluster: `{_markdown_list(supporting)}`")
-            lines.append(f"- How to verify: {_markdown_list(pattern.get('how_to_verify'))}")
-            lines.append(f"- Fix sketch (hypothesis only): {_markdown_list(pattern.get('fix_sketch'))}")
+            lines.append(f"### 模式 {pattern_index}")
+            lines.append(f"- 根因假设：{_md(pattern.get('root_cause'))}")
+            lines.append(f"- 杠杆（改哪里）：`{_md(pattern.get('lever'))}`")
+            lines.append(f"- 置信：`{_md(pattern.get('confidence'))}`")
+            lines.append(f"- 支撑记录（簇内 index）：`{_md(supporting)}`")
+            lines.append(f"- 如何验证：{_md(pattern.get('how_to_verify'))}")
+            lines.append(f"- 修复方向（仅假设，先证后建）：{_md(pattern.get('fix_sketch'))}")
 
             drafts = pattern.get("gold_case_drafts") or []
             if drafts:
                 lines.append(
-                    f"- Candidate gold-case drafts: {len(drafts)} "
-                    f"(see `{CANDIDATE_GOLD.name}`; use only after human+benchmark adjudication)"
+                    f"- 候选 gold 用例草稿：{len(drafts)} 条 "
+                    f"（见 `{CANDIDATE_GOLD.name}`；人工 + benchmark 裁决后才可用）"
                 )
                 all_drafts.extend(drafts)
 
@@ -211,10 +215,10 @@ def main():
         encoding="utf-8",
     )
 
-    print("Wrote triage outputs:")
-    print(f"  report: {REPORT}")
-    print(f"  candidate gold drafts: {CANDIDATE_GOLD} ({len(all_drafts)} records)")
-    print("Reminder: LLM proposes; benchmark adjudicates. No code or gold was modified.")
+    print("已写出 triage 产物:")
+    print(f"  报告: {REPORT}")
+    print(f"  候选 gold 草稿: {CANDIDATE_GOLD}（共 {len(all_drafts)} 条）")
+    print("提醒: LLM 只提假设，benchmark 裁决；未改任何代码或 gold。")
 
 
 if __name__ == "__main__":

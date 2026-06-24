@@ -13,13 +13,21 @@ LOG = Path(__file__).resolve().parents[1] / "logs" / "unresolved_cases.jsonl"
 
 
 def main():
+    import sys as _sys
+    show_all = "--all" in _sys.argv
     if not LOG.exists():
         print(f"No error log found: {LOG}")
         print("Run `python backend/evaluation/run_benchmark.py` first.")
         return
 
-    recs = [json.loads(x) for x in LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
-    print(f"Total error records: {len(recs)}\n")
+    raw = [json.loads(x) for x in LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
+    expected_ok = [r for r in raw if r.get("expected") is True]
+    recs = raw if show_all else [r for r in raw if r.get("expected") is not True]
+    mode = "--all full view" if show_all else "default filtered view; add --all to inspect all"
+    print(
+        f"Total error records: {len(raw)}; hidden expected=True records: "
+        f"{len(expected_ok)}; analyzing: {len(recs)} ({mode})\n"
+    )
 
     def dist(title, counter, n=10):
         print(title)
