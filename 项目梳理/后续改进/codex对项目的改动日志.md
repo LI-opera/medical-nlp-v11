@@ -5443,3 +5443,130 @@ index 5468947..3447581 100644
      except Exception:
          pass
 ```
+
+## 2026-06-24 批次15：LLM 配置与模型工厂
+
+### 修改目的
+
+本批次只为后续“异质 verify”铺基础设施：参考现有 `embedding_config.py` / `embedding_factory.py` 的写法，新增一套 LLM 配置和工厂，让后续可以通过配置选择 DeepSeek 或 Qwen/DashScope。此批次不接入主链路、不改 verify、不影响 benchmark。
+
+### 修改文件
+
+- `backend/utils/llm_config.py`
+- `backend/utils/llm_factory.py`
+
+### 实现要点
+
+- 新增 `LLMProvider`，当前支持：
+  - `deepseek`
+  - `qwen`
+- 新增 `LLMConfig`，包含 provider、model_name、temperature、max_retries。
+- 新增两个预设：
+  - `DEEPSEEK_CONFIG`: `deepseek-chat`
+  - `QWEN_CONFIG`: `qwen3.6-plus`
+- 新增 `create_llm(config)`：
+  - DeepSeek 分支使用 `langchain_deepseek.ChatDeepSeek`，读取 `DEEPSEEK_API_KEY`。
+  - Qwen 分支使用 `langchain_openai.ChatOpenAI`，通过 DashScope OpenAI 兼容端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`，读取 `DASHSCOPE_API_KEY`。
+- 工厂返回对象统一支持 `.invoke(prompt).content`，便于下一批替换 verifier 时少改业务逻辑。
+- 未修改任何现有主链路代码。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/utils`：通过。
+- `.venv\Scripts\python.exe -c "import sys;sys.path.append('backend');from utils.llm_factory import create_llm;from utils.llm_config import DEEPSEEK_CONFIG, QWEN_CONFIG;print('OK')"`：输出 `OK`。
+- 真实调用两个模型：
+  - DeepSeek：返回 `ok`。
+  - Qwen/DashScope：返回 `ok`。
+- `git diff --check -- backend/utils/llm_config.py backend/utils/llm_factory.py`：通过。
+
+### 回滚与排查提示
+
+- 本批次只新增两个文件，回滚时删除 `backend/utils/llm_config.py` 和 `backend/utils/llm_factory.py` 即可。
+- 如果 Qwen 调用失败，优先检查 `DASHSCOPE_API_KEY` 和 `QWEN_CONFIG.model_name` 是否为当前账号支持的模型名。
+- 如果 DeepSeek 调用失败，优先检查 `DEEPSEEK_API_KEY`。
+- 当前尚未接入 verify，因此本批次不会改变主 benchmark 结果。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/utils/llm_config.py b/backend/utils/llm_config.py
+new file mode 100644
+index 0000000..0a35ba7
+--- /dev/null
++++ b/backend/utils/llm_config.py
+@@ -0,0 +1,30 @@
++from dataclasses import dataclass
++from enum import Enum
++
++
++class LLMProvider(str, Enum):
++    """LLM provider options."""
++
++    DEEPSEEK = "deepseek"
++    QWEN = "qwen"
++
++
++@dataclass
++class LLMConfig:
++    """LLM configuration. API keys are read by the factory from environment."""
++
++    provider: LLMProvider = LLMProvider.DEEPSEEK
++    model_name: str = "deepseek-chat"
++    temperature: float = 0.0
++    max_retries: int = 2
++
++
++DEEPSEEK_CONFIG = LLMConfig(
++    provider=LLMProvider.DEEPSEEK,
++    model_name="deepseek-chat",
++)
++
++QWEN_CONFIG = LLMConfig(
++    provider=LLMProvider.QWEN,
++    model_name="qwen3.6-plus",
++)
+diff --git a/backend/utils/llm_factory.py b/backend/utils/llm_factory.py
+new file mode 100644
+index 0000000..6a5cc19
+--- /dev/null
++++ b/backend/utils/llm_factory.py
+@@ -0,0 +1,38 @@
++import os
++
++from utils.llm_config import LLMConfig, LLMProvider
++
++
++QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
++
++
++def create_llm(config: LLMConfig):
++    """Create a chat LLM from config. Currently supports DeepSeek and Qwen."""
++    if config.provider == LLMProvider.DEEPSEEK:
++        from langchain_deepseek import ChatDeepSeek
++
++        api_key = os.getenv("DEEPSEEK_API_KEY")
++        if not api_key:
++            raise ValueError("DEEPSEEK_API_KEY is not set.")
++        return ChatDeepSeek(
++            model=config.model_name,
++            api_key=api_key,
++            temperature=config.temperature,
++            max_retries=config.max_retries,
++        )
++
++    if config.provider == LLMProvider.QWEN:
++        from langchain_openai import ChatOpenAI
++
++        api_key = os.getenv("DASHSCOPE_API_KEY")
++        if not api_key:
++            raise ValueError("DASHSCOPE_API_KEY is not set.")
++        return ChatOpenAI(
++            model=config.model_name,
++            api_key=api_key,
++            base_url=QWEN_BASE_URL,
++            temperature=config.temperature,
++            max_retries=config.max_retries,
++        )
++
++    raise ValueError(f"Unsupported LLM provider: {config.provider}")
+```
