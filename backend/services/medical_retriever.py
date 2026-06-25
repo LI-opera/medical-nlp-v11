@@ -80,10 +80,11 @@ class MedicalRetriever:
             #表示优先提升的领域，不过滤其他领域
             domain_boost: str | None = None,
             #表示过滤的最低分数
-            score_threshold:float | None = None
+            score_threshold:float | None = None,
+            source: str = "snomed",
             ):
         #根据用户数插入检索最相关的医学术语
-        results = self.std_service.search_similar_terms(query=query,limit=top_k)
+        results = self.std_service.search_similar_terms(query=query, limit=top_k, source=source)
         results = self._rerank_results(query, results, domain_boost)
         documents = []
         for item in results:
