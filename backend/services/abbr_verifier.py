@@ -1,7 +1,7 @@
 import json
 import os
 from dotenv import load_dotenv
-from utils.llm_config import DEEPSEEK_CONFIG, LLMConfig
+from utils.llm_config import QWEN_CONFIG, LLMConfig
 from utils.llm_factory import create_llm
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -15,7 +15,7 @@ class ABBVerifier:
     医学缩写扩展校验器：
     作用：判断LLM扩写后的文本是否保持愿意，并且是否能被后续SNOMED标准化结果支持
     """
-    def __init__(self, config: LLMConfig = DEEPSEEK_CONFIG):
+    def __init__(self, config: LLMConfig = QWEN_CONFIG):
         self.llm = create_llm(config)
     
     def verify(self,original_text:str,expanded_text:str,standardization:dict):
