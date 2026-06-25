@@ -193,11 +193,6 @@ index fbdcdca..27a3b18 100644
          """合并相邻医学实体。例如: chest + pain = chest pain"""
 ```
 
-### 回退说明
-
-- 三个代码文件恢复至批次2/提交 `573cad6` 后的实现；仅保留本条失败实验记录用于追溯。
-- `backend/evaluation/benchmark_results.json` 是失败实验的生成结果，不纳入代码提交。
-
 ## 2026-06-20 · V11 批次 3 重构版：弱证据 fallback 弃权门
 
 ### 改动目的
@@ -5652,4 +5647,260 @@ index e0e90ef..f698ecc 100644
 
      def verify(self,original_text:str,expanded_text:str,standardization:dict):
          #检验缩写扩展是否可信
+```
+
+
+### 回退说明
+
+- 三个代码文件恢复至批次2/提交 `573cad6` 后的实现；仅保留本条失败实验记录用于追溯。
+- `backend/evaluation/benchmark_results.json` 是失败实验的生成结果，不纳入代码提交。
+
+## 2026-06-25 L3 Stage1：构建 RxNorm 第二知识源与独立 Milvus 库
+
+### 修改目的
+
+L3 多源路由第一阶段只建设第二个知识源：RxNorm 药品库。本批次不改主链路、不接路由、不触碰 SNOMED 既有 collection `concepts_only_name`，只新增离线脚本并生成独立 Milvus collection `rxnorm_concepts`。
+
+### 修改文件
+
+- `backend/tools/build_rxnorm_csv.py`
+- `backend/tools/rebuild_rxnorm_milvus.py`
+- `.gitignore`
+
+### 实现要点
+
+- 新增 `build_rxnorm_csv.py`：读取 Athena `CONCEPT.csv`，过滤标准、有效、Drug 域的 RxNorm 概念，输出 `backend/data/rxnorm_clinical.csv`。
+- 新增 `rebuild_rxnorm_milvus.py`：读取 RxNorm CSV，使用现有 bge-m3 embedding，创建独立 collection `rxnorm_concepts`。
+- `.gitignore` 新增 RxNorm CSV 生成产物，避免 18MB 全量 CSV 进入 Git。
+- 脚本只操作 `rxnorm_concepts`，不 drop、不 rebuild `concepts_only_name`。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/tools`：通过。
+- `git diff --check -- .gitignore backend/tools/build_rxnorm_csv.py backend/tools/rebuild_rxnorm_milvus.py`：通过。
+- 指令中的 `E:\Work\数据库medical\...` 在本机不存在；实际 Athena 路径为 `E:\Work\数据库-medical\vocabulary_download_v5_{c4c88598-d60c-46b2-b609-64fd902cc91c}_1782381867144\CONCEPT.csv`，脚本已按实际路径修正。
+- `build_rxnorm_csv.py` 运行结果：
+  - 原始行数：523,207。
+  - RxNorm 行数：315,157。
+  - 标准 + 有效 + Drug 行数：157,190。
+  - Ingredient：14,610。
+  - aspirin 命中 1,113 条。
+  - methotrexate 命中 186 条。
+- `rebuild_rxnorm_milvus.py` 运行结果：
+  - 初始 shell 1 小时超时，但后台进程持续插入；随后按 Milvus 行数监控至完成。
+  - `rxnorm_concepts` 最终行数：157,190。
+  - `concepts_only_name` 保持 345,882 行，确认 SNOMED 未受影响。
+- aspirin 检索自测 Top5：
+  - `'aspirin'`，domain=Drug，code=1191，score=1.0
+  - `'aspirin Oral Tablet'`，domain=Drug，code=370611，score=0.8076
+  - `'aspirin 100 MG'`，domain=Drug，code=329292，score=0.8007
+  - `'aspirin Oral Capsule'`，domain=Drug，code=370940，score=0.7933
+  - `'aspirin 450 MG'`，domain=Drug，code=437751，score=0.79
+
+### 回滚与排查提示
+
+- 代码回滚：删除两个新增脚本，并移除 `.gitignore` 的 RxNorm CSV 忽略项。
+- Milvus 回滚：只 drop `rxnorm_concepts`，不要操作 `concepts_only_name`。
+- 建库耗时较长；本次 157,190 条全量嵌入超过 1 小时，后续如频繁重建可考虑增大 batch、GPU/缓存优化或分段恢复。
+- `backend/data/rxnorm_clinical.csv` 是生成产物，已忽略，不进入 Git。
+- 本轮开始前已有的 `backend/evaluation/error_analysis_report.json`、`backend/evaluation/run_benchmark_parallel.py`、`backend/utils/llm_config.py` 等未提交修改未纳入本次提交。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/.gitignore b/.gitignore
+index 4fa3181..b561cf8 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -10,3 +10,5 @@ backend/evaluation/benchmark_results.json
+ backend/logs/
+ backend/data/snomed_clinical.csv
+ snomed_clinical.csv
++backend/data/rxnorm_clinical.csv
++rxnorm_clinical.csv
+diff --git a/backend/tools/build_rxnorm_csv.py b/backend/tools/build_rxnorm_csv.py
+new file mode 100644
+index 0000000..cf93b1c
+--- /dev/null
++++ b/backend/tools/build_rxnorm_csv.py
+@@ -0,0 +1,62 @@
++"""
++Build a second source CSV for RxNorm drug concepts.
++
++This mirrors backend/tools/build_concept_csv.py, but it does not touch the
++existing SNOMED CSV or Milvus collection. It reads Athena CONCEPT.csv, filters
++standard valid RxNorm Drug concepts, and writes backend/data/rxnorm_clinical.csv.
++
++Run:
++    python backend/tools/build_rxnorm_csv.py
++"""
++import os
++
++import pandas as pd
++
++
++INPUT_CSV = (
++    r"E:\Work\数据库-medical\vocabulary_download_v5_"
++    r"{c4c88598-d60c-46b2-b609-64fd902cc91c}_1782381867144\CONCEPT.csv"
++)
++
++CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
++BACKEND_DIR = os.path.dirname(CURRENT_DIR)
++OUTPUT_CSV = os.path.join(BACKEND_DIR, "data", "rxnorm_clinical.csv")
++
++MAX_ROWS = None
++
++
++def main():
++    print(f"Reading {INPUT_CSV} ... (tab-separated, dtype=str)")
++    df = pd.read_csv(INPUT_CSV, sep="\t", dtype=str, keep_default_na=False, na_values=[""])
++    print(f"  Raw rows: {len(df):,}")
++    print(f"  RxNorm rows: {len(df[df['vocabulary_id'] == 'RxNorm']):,}")
++
++    mask = (
++        (df["vocabulary_id"] == "RxNorm")
++        & (df["standard_concept"] == "S")
++        & (df["invalid_reason"].fillna("") == "")
++        & (df["domain_id"] == "Drug")
++    )
++    out = df[mask].copy()
++    print(f"  Standard + valid + Drug rows: {len(out):,}")
++    print("  concept_class distribution (top 15):")
++    for concept_class, count in out["concept_class_id"].value_counts().head(15).items():
++        print(f"    {count:>8,}  {concept_class}")
++
++    ingredients = out[out["concept_class_id"] == "Ingredient"]["concept_name"].head(10).tolist()
++    print(f"  Ingredient samples: {ingredients}")
++
++    if MAX_ROWS and len(out) > MAX_ROWS:
++        out = out.head(MAX_ROWS)
++        print(f"  Truncated to first {MAX_ROWS:,} rows")
++
++    out["FSN"] = out["concept_name"]
++    out = out[["concept_id", "concept_name", "domain_id", "concept_code", "FSN"]]
++    out.to_csv(OUTPUT_CSV, index=False, encoding="utf-8")
++
++    print(f"\nWrote {OUTPUT_CSV} with {len(out):,} rows")
++    print("Next: python backend/tools/rebuild_rxnorm_milvus.py")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/tools/rebuild_rxnorm_milvus.py b/backend/tools/rebuild_rxnorm_milvus.py
+new file mode 100644
+index 0000000..654b150
+--- /dev/null
++++ b/backend/tools/rebuild_rxnorm_milvus.py
+@@ -0,0 +1,111 @@
++"""
++Build the second Milvus collection for RxNorm: rxnorm_concepts.
++
++This mirrors backend/tools/rebuild_milvus.py, but it does not drop or rebuild
++the existing SNOMED collection concepts_only_name.
++
++Run:
++    python backend/tools/rebuild_rxnorm_milvus.py
++"""
++import os
++import sys
++
++import pandas as pd
++from pymilvus import DataType, MilvusClient
++
++
++CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
++BACKEND_DIR = os.path.dirname(CURRENT_DIR)
++sys.path.append(BACKEND_DIR)
++
++from utils.embedding_config import EmbeddingConfig
++from utils.embedding_factory import create_embedding_model
++
++
++CSV_PATH = os.path.join(BACKEND_DIR, "data", "rxnorm_clinical.csv")
++COLLECTION_NAME = "rxnorm_concepts"
++MILVUS_URI = os.getenv("MILVUS_URI", "http://127.0.0.1:19530")
++BATCH = 256
++
++
++def main():
++    print(f"Reading {CSV_PATH}")
++    df = pd.read_csv(CSV_PATH, dtype=str, keep_default_na=False)
++    names = df["concept_name"].astype(str).tolist()
++    print(f"  Rows: {len(df):,}")
++
++    print("Loading embedding model (bge-m3)...")
++    model = create_embedding_model(EmbeddingConfig())
++    dim = len(model.embed_query("test"))
++    print("  Vector dim:", dim)
++
++    print("Connecting Milvus:", MILVUS_URI)
++    client = MilvusClient(uri=MILVUS_URI)
++    if client.has_collection(COLLECTION_NAME):
++        print("  Dropping old collection:", COLLECTION_NAME)
++        client.drop_collection(COLLECTION_NAME)
++
++    schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
++    for field in [
++        {"field_name": "id", "datatype": DataType.INT64, "is_primary": True},
++        {"field_name": "concept_id", "datatype": DataType.VARCHAR, "max_length": 64},
++        {"field_name": "concept_name", "datatype": DataType.VARCHAR, "max_length": 512},
++        {"field_name": "domain_id", "datatype": DataType.VARCHAR, "max_length": 128},
++        {"field_name": "concept_code", "datatype": DataType.VARCHAR, "max_length": 128},
++        {"field_name": "vector", "datatype": DataType.FLOAT_VECTOR, "dim": dim},
++        {"field_name": "FSN", "datatype": DataType.VARCHAR, "max_length": 2048},
++    ]:
++        schema.add_field(**field)
++
++    index_params = client.prepare_index_params()
++    index_params.add_index(field_name="vector", index_type="AUTOINDEX", metric_type="COSINE")
++    client.create_collection(
++        collection_name=COLLECTION_NAME,
++        schema=schema,
++        index_params=index_params,
++    )
++
++    print("Embedding + inserting rows ...")
++    total = len(df)
++    for start in range(0, total, BATCH):
++        end = min(start + BATCH, total)
++        vectors = model.embed_documents(names[start:end])
++        rows = []
++        for row_index in range(start, end):
++            row = df.iloc[row_index]
++            rows.append({
++                "id": row_index,
++                "concept_id": str(row["concept_id"]),
++                "concept_name": str(row["concept_name"]),
++                "domain_id": str(row["domain_id"]),
++                "concept_code": str(row["concept_code"]),
++                "FSN": str(row.get("FSN", "")),
++                "vector": vectors[row_index - start],
++            })
++        client.insert(collection_name=COLLECTION_NAME, data=rows)
++        print(f"  {end:,}/{total:,}", end="\r")
++
++    client.flush(collection_name=COLLECTION_NAME)
++    client.load_collection(collection_name=COLLECTION_NAME)
++    print(f"\nDone. Inserted {total:,} rows into {COLLECTION_NAME}.")
++
++    print("\n=== Self-test 'aspirin' ===")
++    query_vector = model.embed_query("aspirin")
++    results = client.search(
++        collection_name=COLLECTION_NAME,
++        data=[query_vector],
++        anns_field="vector",
++        limit=5,
++        output_fields=["concept_name", "domain_id", "concept_code"],
++    )
++    for item in results[0]:
++        entity = item["entity"]
++        print(
++            f"  {entity['concept_name']!r}  "
++            f"domain={entity['domain_id']}  "
++            f"score={round(item['distance'], 4)}"
++        )
++
++
++if __name__ == "__main__":
++    main()
 ```
