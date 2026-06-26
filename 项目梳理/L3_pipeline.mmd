@@ -5,18 +5,26 @@ config:
 ---
 graph TD;
 	__start__([<p>__start__</p>]):::first
-	expand(expand)
-	route_retrieve(route_retrieve)
+	route(route)
+	retrieve_snomed(retrieve_snomed)
+	retrieve_rxnorm(retrieve_rxnorm)
 	verify(verify)
-	reflect(reflect)
+	propose_requery(propose_requery)
+	re_retrieve(re_retrieve)
+	re_verify(re_verify)
 	finalize(finalize)
 	__end__([<p>__end__</p>]):::last
-	__start__ --> expand;
-	expand -.-> finalize;
-	expand -.-> route_retrieve;
-	reflect --> finalize;
-	route_retrieve --> verify;
-	verify --> reflect;
+	__start__ --> route;
+	propose_requery --> re_retrieve;
+	re_retrieve --> re_verify;
+	re_verify -.-> finalize;
+	re_verify -.-> propose_requery;
+	retrieve_rxnorm --> verify;
+	retrieve_snomed --> verify;
+	route -.-> retrieve_rxnorm;
+	route -.-> retrieve_snomed;
+	verify -.-> finalize;
+	verify -.-> propose_requery;
 	finalize --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
