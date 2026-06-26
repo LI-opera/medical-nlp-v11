@@ -6444,4 +6444,444 @@ index 0000000..f1e2902
 +    main()
 ```
 
-1
+## 2026-06-26 L3 Stage6：LangGraph 可视化包装（不进生产热路径）
+
+### 修改目的
+
+把现有 `ABBRService.expand_verify_with_retry` 的“扩写 → 路由检索 → verify → 反思 → 收尾”流程用 LangGraph 重新表达成可视化图和备用入口。节点只调用现有 service 方法，不改生产热路径、不改 `/api/`、不改主链路分数。
+
+### 修改文件
+
+- `backend/graph/__init__.py`
+- `backend/graph/standardization_graph.py`
+- `backend/graph/render_graph.py`
+- `项目梳理/L3_pipeline.mmd`
+- `项目梳理/后续改进/codex对项目的改动日志.md`
+
+### 实现要点
+
+- 新增 `StandardizationGraph`，用 LangGraph 表达 5 个节点：
+  - `expand`
+  - `route_retrieve`
+  - `verify`
+  - `reflect`
+  - `finalize`
+- 节点复用 `ABBRService` 既有方法与对象：
+  - `_get_abbreviation_candidates`
+  - `_build_expanded_text_deterministic`
+  - `_route_source`
+  - `retriever.retrieve`
+  - `verifier.verify_mappings`
+  - `_reflect_refine_standardization`
+- 图中唯一显式条件分支是 coverage 没扩出任何词时从 `expand` 直接到 `finalize`。
+- 反思重检索仍封装在 `reflect` 节点内部，忠实于当前生产状态机真实行为。
+- 新增 `render_graph.py`，用于生成 mermaid 文件并做 graph vs production parity 测试。
+- 生成 `项目梳理/L3_pipeline.mmd` 作为可视化产物。
+- 仓库根目录无 `requirements.txt`；本机 `.venv` 已存在 `langgraph`，因此未新增依赖文件。
+- 本轮顺手清理了日志末尾此前残留的孤立字符 `1`。
+
+### Mermaid 图
+
+```mermaid
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	expand(expand)
+	route_retrieve(route_retrieve)
+	verify(verify)
+	reflect(reflect)
+	finalize(finalize)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> expand;
+	expand -.-> finalize;
+	expand -.-> route_retrieve;
+	reflect --> finalize;
+	route_retrieve --> verify;
+	verify --> reflect;
+	finalize --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -c "import importlib.util; print(importlib.util.find_spec('langgraph') is not None)"`：通过，输出 `True`。
+- `.venv\Scripts\python.exe -m compileall backend/graph`：通过。
+- `.venv\Scripts\python.exe backend/graph/render_graph.py`：通过，写入 `项目梳理/L3_pipeline.mmd`，parity 结果如下：
+
+```text
+=== parity: graph vs expand_verify_with_retry ===
+[PASS] 'The patient has CP and DM.'
+[PASS] 'The patient took ASA for chest pain.'
+[PASS] 'Patient reports SOB.'
+[PASS] 'zzz qqq.'
+
+PARITY: ALL PASS
+```
+
+- `.venv\Scripts\python.exe backend/evaluation/run_benchmark.py`：通过，Total Cases `74`，Correct `71`，Expansion Accuracy `0.9595`，确认生产热路径无副作用。
+
+### 回滚与排查提示
+
+- 回滚只需删除 `backend/graph/` 整个目录与 `项目梳理/L3_pipeline.mmd`。
+- 生产链路不依赖该包装，删除后不影响 API 或 benchmark。
+- 若 parity 失败，应只调整 `backend/graph/standardization_graph.py` 的 glue 编排，不要改生产 `abbr_service.py` 去迁就图。
+- 若渲染失败，优先确认 `.venv` 中 `langgraph` 是否存在，以及 Milvus / DeepSeek key 是否可用于 parity 样例。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/graph/__init__.py b/backend/graph/__init__.py
+new file mode 100644
+index 0000000..8b13789
+--- /dev/null
++++ b/backend/graph/__init__.py
+@@ -0,0 +1 @@
++
+diff --git a/backend/graph/render_graph.py b/backend/graph/render_graph.py
+new file mode 100644
+index 0000000..379749f
+--- /dev/null
++++ b/backend/graph/render_graph.py
+@@ -0,0 +1,69 @@
++"""
++渲染 L3 流程图（mermaid）+ parity 测试。
++
++证明 LangGraph 包装与生产状态机 expand_verify_with_retry 输出一致。
++跑法：python backend/graph/render_graph.py（需 Milvus + DeepSeek key）
++"""
++import os
++import sys
++from pathlib import Path
++
++os.environ["ERROR_LOG_RUNTIME"] = "0"
++
++BACKEND_DIR = Path(__file__).resolve().parents[1]
++sys.path.append(str(BACKEND_DIR))
++
++from graph.standardization_graph import StandardizationGraph
++from services.abbr_service import ABBRService
++
++
++SAMPLES = [
++    "The patient has CP and DM.",
++    "The patient took ASA for chest pain.",
++    "Patient reports SOB.",
++    "zzz qqq.",
++]
++
++
++def _sig(res):
++    fr = res.get("final_result") or {}
++    states = sorted(
++        (s["abbreviation"], s["expansion"], s["status"])
++        for s in fr.get("mapping_states", [])
++    )
++    stds = sorted(
++        (
++            m["abbreviation"],
++            (m.get("chosen_concept") or {}).get("concept_id"),
++        )
++        for m in fr.get("mapping_standardizations", [])
++    )
++    return (res.get("final_expanded_text"), res.get("success"), states, stds)
++
++
++def main():
++    svc = ABBRService()
++    g = StandardizationGraph(svc)
++
++    mmd = g.mermaid()
++    out = BACKEND_DIR.parent / "项目梳理" / "L3_pipeline.mmd"
++    out.write_text(mmd, encoding="utf-8")
++    print("=== mermaid 已写入", out, "===\n")
++    print(mmd)
++
++    print("\n=== parity: graph vs expand_verify_with_retry ===")
++    ok = True
++    for text in SAMPLES:
++        a = _sig(svc.expand_verify_with_retry(text))
++        b = _sig(g.run(text))
++        same = a == b
++        ok = ok and same
++        print(f"[{'PASS' if same else 'FAIL'}] {text!r}")
++        if not same:
++            print("  prod :", a)
++            print("  graph:", b)
++    print("\nPARITY:", "ALL PASS" if ok else "MISMATCH")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/graph/standardization_graph.py b/backend/graph/standardization_graph.py
+new file mode 100644
+index 0000000..a9f0e25
+--- /dev/null
++++ b/backend/graph/standardization_graph.py
+@@ -0,0 +1,231 @@
++"""
++L3 Stage-6: LangGraph 可视化包装。
++
++把 ABBRService 既有标准化链路用 LangGraph 重新表达；节点只调 svc 现有方法，
++leaf 逻辑零重写，仅复刻 expand_verify_with_retry 的编排 glue。
++不进生产热路径；正确性由 render_graph.py 的 parity 测试兜底。
++"""
++from typing import Optional, TypedDict
++
++from langgraph.graph import END, START, StateGraph
++
++from services.abbr_service import ABBRService
++
++
++class PipelineState(TypedDict, total=False):
++    text: str
++    records: list
++    expanded_text: str
++    has_expansion: bool
++    result: dict
++
++
++class StandardizationGraph:
++    def __init__(self, svc: Optional[ABBRService] = None):
++        self.svc = svc or ABBRService()
++        self.app = self._build()
++
++    # ---- 节点：每个只调用 svc 现有方法 ----
++    def n_expand(self, state):
++        svc, text = self.svc, state["text"]
++        records = []
++        for info in svc._get_abbreviation_candidates(text):
++            best = info.get("best_expansion")
++            records.append({
++                "abbreviation": info.get("abbreviation"),
++                "source": info.get("candidate_source"),
++                "candidates": info.get("candidates") or [],
++                "coverage": info.get("coverage") or {},
++                "expansion": best if best else None,
++                "label": info.get("chosen_label"),
++                "domain": info.get("chosen_domain"),
++                "std_cache": None,
++                "std_concept": None,
++                "status": "PENDING" if best else "NOT_EXPANDED",
++                "failure": None,
++            })
++        visible = [r for r in records if r["expansion"] and r["status"] != "ABSTAIN"]
++        expanded = svc._build_expanded_text_deterministic(text, visible)
++        return {
++            "records": records,
++            "expanded_text": expanded,
++            "has_expansion": any(r["expansion"] for r in records),
++        }
++
++    def n_route_retrieve(self, state):
++        svc = self.svc
++        for r in [r for r in state["records"] if r["status"] == "PENDING"]:
++            docs = svc.retriever.retrieve(
++                query=r["expansion"],
++                top_k=10,
++                domain_filter=None,
++                domain_boost=r.get("domain"),
++                score_threshold=0.6,
++                source=svc._route_source(r.get("domain")),
++            )
++            r["std_cache"] = [
++                {
++                    "concept_id": d["metadata"]["concept_id"],
++                    "concept_name": d["metadata"]["concept_name"],
++                    "domain_id": d["metadata"]["domain_id"],
++                    "concept_code": d["metadata"]["concept_code"],
++                    "score": d["metadata"]["score"],
++                    "rerank_score": d["metadata"].get("rerank_score"),
++                }
++                for d in docs[:10]
++            ]
++        return {"records": state["records"]}
++
++    def n_verify(self, state):
++        svc, text, expanded = self.svc, state["text"], state["expanded_text"]
++        pending = [r for r in state["records"] if r["status"] == "PENDING"]
++        ms = [
++            {
++                "abbreviation": r["abbreviation"],
++                "expansion": r["expansion"],
++                "candidates": r["std_cache"],
++            }
++            for r in pending
++        ]
++        verification = svc.verifier.verify_mappings(
++            original_text=text,
++            expanded_text=expanded,
++            mapping_standardizations=ms,
++        )
++        validations = verification.get("mapping_validations", [])
++
++        def find(rec):
++            for v in validations:
++                if (
++                    v.get("abbreviation") == rec["abbreviation"]
++                    and v.get("expansion") == rec["expansion"]
++                ):
++                    return v
++            return None
++
++        for r in pending:
++            v = find(r)
++            ci = v.get("chosen_index") if v else None
++            faithful = bool(v and v.get("standardization_faithful") is True)
++            valid = (
++                faithful
++                and isinstance(ci, int)
++                and not isinstance(ci, bool)
++                and 0 <= ci < len(r["std_cache"])
++            )
++            r["std_concept"] = r["std_cache"][ci] if valid else None
++            if r["std_concept"]:
++                r["status"], r["failure"] = "CODED", None
++            else:
++                r["status"] = "WITHHELD"
++                r["failure"] = {
++                    "type": "CODE_WITHHELD",
++                    "stage": "standardization",
++                    "reason": (
++                        v.get("reason") if v else None
++                    ) or "no faithful SNOMED concept among retrieved candidates",
++                    "evidence": {
++                        "retrieved_top": [
++                            c.get("concept_name") for c in (r["std_cache"] or [])[:5]
++                        ]
++                    },
++                }
++        return {"records": state["records"]}
++
++    def n_reflect(self, state):
++        svc, text, expanded = self.svc, state["text"], state["expanded_text"]
++        # 复刻生产：对每个已解析 record 跑反思；函数内部决定是否真正改写/重检索。
++        for r in [
++            r for r in state["records"] if r["status"] in ("CODED", "WITHHELD")
++        ]:
++            svc._reflect_refine_standardization(r, text, expanded)
++            if r.get("std_concept") and r["status"] == "WITHHELD":
++                r["status"], r["failure"] = "CODED", None
++        visible = [r for r in state["records"] if r["expansion"] and r["status"] != "ABSTAIN"]
++        return {
++            "records": state["records"],
++            "expanded_text": svc._build_expanded_text_deterministic(text, visible),
++        }
++
++    def n_finalize(self, state):
++        svc, text, records = self.svc, state["text"], state["records"]
++        for r in records:
++            if r["status"] == "PENDING":
++                r["status"] = "ABSTAIN"
++                r["failure"] = {
++                    "type": "EXPANSION_ABSTAIN",
++                    "stage": "coverage",
++                    "reason": "expansion candidates exhausted without a lock",
++                    "evidence": {},
++                }
++        visible = [r for r in records if r["expansion"] and r["status"] != "ABSTAIN"]
++        expanded = svc._build_expanded_text_deterministic(text, visible)
++        resolved = [r for r in records if r["status"] in ("CODED", "WITHHELD")]
++        expanded_records = [r for r in records if r["expansion"]]
++        success = len(expanded_records) > 0 and all(
++            r["status"] in ("CODED", "WITHHELD") for r in expanded_records
++        )
++        final_result = {
++            "expanded_text": expanded,
++            "mappings": [
++                {
++                    "abbreviation": r["abbreviation"],
++                    "expansion": r["expansion"],
++                    "label": r["label"],
++                    "source": r["source"],
++                }
++                for r in resolved
++            ],
++            "mapping_standardizations": [
++                {
++                    "abbreviation": r["abbreviation"],
++                    "expansion": r["expansion"],
++                    "candidates": r["std_cache"],
++                    "chosen_concept": r["std_concept"],
++                }
++                for r in resolved
++            ],
++            "mapping_states": [
++                {
++                    "abbreviation": r["abbreviation"],
++                    "expansion": r["expansion"],
++                    "status": r["status"],
++                    "failure": r["failure"],
++                }
++                for r in records
++            ],
++        }
++        return {
++            "result": {
++                "original_text": text,
++                "final_expanded_text": expanded,
++                "success": success,
++                "final_result": final_result,
++            }
++        }
++
++    def _build(self):
++        g = StateGraph(PipelineState)
++        g.add_node("expand", self.n_expand)
++        g.add_node("route_retrieve", self.n_route_retrieve)
++        g.add_node("verify", self.n_verify)
++        g.add_node("reflect", self.n_reflect)
++        g.add_node("finalize", self.n_finalize)
++        g.add_edge(START, "expand")
++        # 真实条件分支：coverage 一个都没扩出来 → 直接收尾。
++        g.add_conditional_edges(
++            "expand",
++            lambda s: "route_retrieve" if s["has_expansion"] else "finalize",
++            {"route_retrieve": "route_retrieve", "finalize": "finalize"},
++        )
++        g.add_edge("route_retrieve", "verify")
++        g.add_edge("verify", "reflect")
++        g.add_edge("reflect", "finalize")
++        g.add_edge("finalize", END)
++        return g.compile()
++
++    def run(self, text: str):
++        return self.app.invoke({"text": text})["result"]
++
++    def mermaid(self) -> str:
++        return self.app.get_graph().draw_mermaid()
+diff --git "a/\351\241\271\347\233\256\346\242\263\347\220\206/L3_pipeline.mmd" "b/\351\241\271\347\233\256\346\242\263\347\220\206/L3_pipeline.mmd"
+new file mode 100644
+index 0000000..e5c8c19
+--- /dev/null
++++ "b/\351\241\271\347\233\256\346\242\263\347\220\206/L3_pipeline.mmd"
+@@ -0,0 +1,23 @@
++---
++config:
++  flowchart:
++    curve: linear
++---
++graph TD;
++	__start__([<p>__start__</p>]):::first
++	expand(expand)
++	route_retrieve(route_retrieve)
++	verify(verify)
++	reflect(reflect)
++	finalize(finalize)
++	__end__([<p>__end__</p>]):::last
++	__start__ --> expand;
++	expand -.-> finalize;
++	expand -.-> route_retrieve;
++	reflect --> finalize;
++	route_retrieve --> verify;
++	verify --> reflect;
++	finalize --> __end__;
++	classDef default fill:#f2f0ff,line-height:1.2
++	classDef first fill-opacity:0
++	classDef last fill:#bfb6fc
+```
