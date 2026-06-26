@@ -7711,4 +7711,172 @@ index 3f06d27..5c7e9b4 100644
          """Expand abbreviations, standardize, and verify with a unified data flow.
 ```
 
-## 
+## 2026-06-27 L3 Stage6e：LangGraph 反思环对齐生产 6d
+
+### 修改目的
+
+Stage6d 已让生产 `ABBRService` 的 reflection 支持默认最多 2 轮的有界迭代，并包含“首轮可横移、后续严格升秩”的停留规则。Stage6c 的 LangGraph 图仍是 `max_reflect_iter=1` 单趟。本轮只改 LangGraph 包装层，让图的代码能力上限与生产一致，避免可视化表达落后于生产逻辑。
+
+### 修改文件
+
+- `backend/graph/standardization_graph.py`
+- `项目梳理/后续改进/codex对项目的改动日志.md`
+
+注：`项目梳理/L3_pipeline.mmd` 由 `render_graph.py` 重新写入，但内容与 Stage6c 相同，Git 无 diff；本轮未改 `abbr_service.py` 或 API。
+
+### 实现要点
+
+- `StandardizationGraph.__init__` 的 `max_reflect_iter` 默认值从 `1` 改为 `2`。
+- `n_route` 初始化每个 mapping 的 `_tried` 与 `_reflect_stop`，用于跨反思轮次去重与早停。
+- `n_propose_requery` 复用生产 `svc._std_rank(r)`，记录 `_rank_before`，并只保留未尝试过的新改写词。
+- `n_re_retrieve` 在没有带回新候选时设置 `_reflect_stop=True`。
+- `n_re_verify` 对齐生产 6d：
+  - 忠实且选中概念名来自本轮改写词时才考虑写回。
+  - 若新结果质量秩不高于旧秩，仅首轮 `reflect_iter == 1` 允许横移采纳，之后停。
+  - 若质量秩严格升高，则采纳并允许继续下一轮。
+  - 未处理成功则设置 `_reflect_stop=True`。
+- `_enter_reflect` 增加 `_reflect_stop` 判断，同时保留 `max_reflect_iter` 上限。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/graph`：通过。
+- `.venv\Scripts\python.exe backend/graph/render_graph.py`：通过。
+- parity 结果：
+
+```text
+=== parity: graph vs expand_verify_with_retry ===
+[PASS] 'The patient has CP and DM.'
+[PASS] 'The patient took ASA for chest pain.'
+[PASS] 'Patient reports SOB.'
+[PASS] 'zzz qqq.'
+
+PARITY: ALL PASS
+```
+
+- `git status` 确认本轮没有 `backend/services/abbr_service.py` 或 API 文件改动；生产代码未被触碰。
+- `项目梳理/L3_pipeline.mmd` 重新生成但无内容差异：图形状与 Stage6c 相同，变化只在图节点内部反思逻辑能力。
+
+### 回滚与排查提示
+
+- 回滚只需把 `backend/graph/standardization_graph.py` 退回 Stage6c 版，即 `max_reflect_iter=1` 单趟反思图。
+- 若 parity 失败，优先对比 graph 的逐 mapping 反思状态与生产 `ABBRService._reflect_refine_standardization` 的 6d 规则，尤其是 `_std_rank`、`_tried`、`_reflect_stop` 与 `reflect_iter`。
+- 该图仍不在生产热路径，回滚或修改不会影响 API。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/graph/standardization_graph.py b/backend/graph/standardization_graph.py
+index df9e965..23795a1 100644
+--- a/backend/graph/standardization_graph.py
++++ b/backend/graph/standardization_graph.py
+@@ -35,7 +35,7 @@ def _reflectable(rec):
+ 
+ 
+ class StandardizationGraph:
+-    def __init__(self, svc: Optional[ABBRService] = None, max_reflect_iter: int = 1):
++    def __init__(self, svc: Optional[ABBRService] = None, max_reflect_iter: int = 2):
+         self.svc = svc or ABBRService()
+         self.max_reflect_iter = max_reflect_iter
+         self.app = self._build()
+@@ -45,6 +45,8 @@ class StandardizationGraph:
+         # 显式决策节点：把选中的源标到 record 上（供图阅读 / 调试）；真正分流在条件边。
+         r = state["record"]
+         r["source"] = self.svc._route_source(r.get("domain"))
++        r.setdefault("_tried", {r["expansion"].strip().lower()})
++        r["_reflect_stop"] = False
+         return {"record": r}
+ 
+     def _retrieve(self, r, source):
+@@ -126,12 +128,19 @@ class StandardizationGraph:
+         svc, r = self.svc, state["record"]
+         r.pop("_requeries", None)
+         r.pop("_new_cands", None)
++        r["_rank_before"] = svc._std_rank(r)
+         sc = r.get("std_concept")
+         chosen_name = sc.get("concept_name") if sc else None
+         seen = [c["concept_name"] for c in r["std_cache"]]
+-        r["_requeries"] = (
+-            svc.verifier.propose_requeries(r["expansion"], chosen_name, seen) or []
+-        )
++        requeries = svc.verifier.propose_requeries(r["expansion"], chosen_name, seen) or []
++        tried = r.setdefault("_tried", {r["expansion"].strip().lower()})
++        new_terms = [q for q in requeries if q.strip().lower() not in tried]
++        if not new_terms:
++            r["_reflect_stop"] = True
++            r["_requeries"] = []
++        else:
++            tried.update(q.strip().lower() for q in new_terms)
++            r["_requeries"] = new_terms
+         return {"record": r, "reflect_iter": state.get("reflect_iter", 0) + 1}
+ 
+     def n_re_retrieve(self, state):
+@@ -165,6 +174,8 @@ class StandardizationGraph:
+                 reverse=True,
+             )[:15]
+             r["_new_cands"] = new_cands if len(new_cands) > len(r["std_cache"]) else None
++            if r["_new_cands"] is None:
++                r["_reflect_stop"] = True
+         return {"record": r}
+ 
+     def n_re_verify(self, state):
+@@ -176,6 +187,8 @@ class StandardizationGraph:
+         )
+         new_cands = r.get("_new_cands")
+         requeries = r.get("_requeries") or []
++        rank_before = r.get("_rank_before", svc._std_rank(r))
++        reflect_iter = state.get("reflect_iter", 0)
+         r.pop("_requeries", None)
+         r.pop("_new_cands", None)
+         if new_cands:
+@@ -192,6 +205,7 @@ class StandardizationGraph:
+             v = vs[0] if vs else None
+             ci = v.get("chosen_index") if v else None
+             faithful = bool(v and v.get("standardization_faithful") is True)
++            handled = False
+             if (
+                 faithful
+                 and isinstance(ci, int)
+@@ -201,19 +215,37 @@ class StandardizationGraph:
+                 refined = new_cands[ci]
+                 requery_names = {q.strip().lower() for q in requeries}
+                 if refined.get("concept_name", "").strip().lower() in requery_names:
+-                    r["std_cache"] = new_cands
+-                    r["std_concept"] = refined
+-                    if r["status"] == "WITHHELD":
+-                        r["status"], r["failure"] = "CODED", None
++                    refined_rank = 2 if refined.get("concept_name", "").strip().lower() == r["expansion"].strip().lower() else 1
++                    if refined_rank <= rank_before:
++                        # 横移：仅首轮(reflect_iter==1)采纳，之后停；次轮起不采纳横移。
++                        if reflect_iter == 1:
++                            r["std_cache"] = new_cands
++                            r["std_concept"] = refined
++                            if r["status"] == "WITHHELD":
++                                r["status"], r["failure"] = "CODED", None
++                        r["_reflect_stop"] = True
++                        handled = True
++                    else:
++                        # 秩严格变高：采纳并允许继续。
++                        r["std_cache"] = new_cands
++                        r["std_concept"] = refined
++                        if r["status"] == "WITHHELD":
++                            r["status"], r["failure"] = "CODED", None
++                        handled = True
++            if not handled:
++                r["_reflect_stop"] = True
+         return {"record": r}
+ 
+     def n_finalize(self, state):
+         return {"result": state["record"]}
+ 
+     def _enter_reflect(self, state):
++        r = state["record"]
+         if state.get("reflect_iter", 0) >= self.max_reflect_iter:
+             return "finalize"
+-        return "propose_requery" if _reflectable(state["record"]) else "finalize"
++        if r.get("_reflect_stop"):
++            return "finalize"
++        return "propose_requery" if _reflectable(r) else "finalize"
+ 
+     def _build(self):
+         g = StateGraph(MappingState)
+```

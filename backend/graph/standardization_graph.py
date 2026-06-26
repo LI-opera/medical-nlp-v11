@@ -35,7 +35,7 @@ def _reflectable(rec):
 
 
 class StandardizationGraph:
-    def __init__(self, svc: Optional[ABBRService] = None, max_reflect_iter: int = 1):
+    def __init__(self, svc: Optional[ABBRService] = None, max_reflect_iter: int = 2):
         self.svc = svc or ABBRService()
         self.max_reflect_iter = max_reflect_iter
         self.app = self._build()
@@ -45,6 +45,8 @@ class StandardizationGraph:
         # 显式决策节点：把选中的源标到 record 上（供图阅读 / 调试）；真正分流在条件边。
         r = state["record"]
         r["source"] = self.svc._route_source(r.get("domain"))
+        r.setdefault("_tried", {r["expansion"].strip().lower()})
+        r["_reflect_stop"] = False
         return {"record": r}
 
     def _retrieve(self, r, source):
@@ -126,12 +128,19 @@ class StandardizationGraph:
         svc, r = self.svc, state["record"]
         r.pop("_requeries", None)
         r.pop("_new_cands", None)
+        r["_rank_before"] = svc._std_rank(r)
         sc = r.get("std_concept")
         chosen_name = sc.get("concept_name") if sc else None
         seen = [c["concept_name"] for c in r["std_cache"]]
-        r["_requeries"] = (
-            svc.verifier.propose_requeries(r["expansion"], chosen_name, seen) or []
-        )
+        requeries = svc.verifier.propose_requeries(r["expansion"], chosen_name, seen) or []
+        tried = r.setdefault("_tried", {r["expansion"].strip().lower()})
+        new_terms = [q for q in requeries if q.strip().lower() not in tried]
+        if not new_terms:
+            r["_reflect_stop"] = True
+            r["_requeries"] = []
+        else:
+            tried.update(q.strip().lower() for q in new_terms)
+            r["_requeries"] = new_terms
         return {"record": r, "reflect_iter": state.get("reflect_iter", 0) + 1}
 
     def n_re_retrieve(self, state):
@@ -165,6 +174,8 @@ class StandardizationGraph:
                 reverse=True,
             )[:15]
             r["_new_cands"] = new_cands if len(new_cands) > len(r["std_cache"]) else None
+            if r["_new_cands"] is None:
+                r["_reflect_stop"] = True
         return {"record": r}
 
     def n_re_verify(self, state):
@@ -176,6 +187,8 @@ class StandardizationGraph:
         )
         new_cands = r.get("_new_cands")
         requeries = r.get("_requeries") or []
+        rank_before = r.get("_rank_before", svc._std_rank(r))
+        reflect_iter = state.get("reflect_iter", 0)
         r.pop("_requeries", None)
         r.pop("_new_cands", None)
         if new_cands:
@@ -192,6 +205,7 @@ class StandardizationGraph:
             v = vs[0] if vs else None
             ci = v.get("chosen_index") if v else None
             faithful = bool(v and v.get("standardization_faithful") is True)
+            handled = False
             if (
                 faithful
                 and isinstance(ci, int)
@@ -201,19 +215,37 @@ class StandardizationGraph:
                 refined = new_cands[ci]
                 requery_names = {q.strip().lower() for q in requeries}
                 if refined.get("concept_name", "").strip().lower() in requery_names:
-                    r["std_cache"] = new_cands
-                    r["std_concept"] = refined
-                    if r["status"] == "WITHHELD":
-                        r["status"], r["failure"] = "CODED", None
+                    refined_rank = 2 if refined.get("concept_name", "").strip().lower() == r["expansion"].strip().lower() else 1
+                    if refined_rank <= rank_before:
+                        # 横移：仅首轮(reflect_iter==1)采纳，之后停；次轮起不采纳横移。
+                        if reflect_iter == 1:
+                            r["std_cache"] = new_cands
+                            r["std_concept"] = refined
+                            if r["status"] == "WITHHELD":
+                                r["status"], r["failure"] = "CODED", None
+                        r["_reflect_stop"] = True
+                        handled = True
+                    else:
+                        # 秩严格变高：采纳并允许继续。
+                        r["std_cache"] = new_cands
+                        r["std_concept"] = refined
+                        if r["status"] == "WITHHELD":
+                            r["status"], r["failure"] = "CODED", None
+                        handled = True
+            if not handled:
+                r["_reflect_stop"] = True
         return {"record": r}
 
     def n_finalize(self, state):
         return {"result": state["record"]}
 
     def _enter_reflect(self, state):
+        r = state["record"]
         if state.get("reflect_iter", 0) >= self.max_reflect_iter:
             return "finalize"
-        return "propose_requery" if _reflectable(state["record"]) else "finalize"
+        if r.get("_reflect_stop"):
+            return "finalize"
+        return "propose_requery" if _reflectable(r) else "finalize"
 
     def _build(self):
         g = StateGraph(MappingState)
