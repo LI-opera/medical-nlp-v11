@@ -98,69 +98,92 @@ class ABBRService:
     def _route_source(domain):
         return "rxnorm" if domain == "Drug" else "snomed"
 
-    def _reflect_refine_standardization(self, s, original_text, expanded_text):
-        """batch10 标准化反思:非精确同名(或弃码)时,换同义词重检索一次。
-        verify 在更全候选池中重选;只升级不强压,原候选仍在池中可回退。
+    @staticmethod
+    def _std_rank(s):
+        """标准化质量秩:2=精确同名,1=忠实非同名,0=弃码。"""
+        sc = s.get("std_concept")
+        if not sc:
+            return 0
+        name = (sc.get("concept_name") or "").strip().lower()
+        return 2 if name == s["expansion"].strip().lower() else 1
+
+    def _reflect_refine_standardization(self, s, original_text, expanded_text, max_iter=None):
+        """batch10 → L3-6d:标准化反思【真迭代】。
+        每轮:非精确同名(或弃码)时换同义词重检索 → verify 重选(保守门);
+        只有本轮秩严格变高才再来一轮,否则停。带新证据,非同源复判。
+        max_iter 默认读 env REFLECT_MAX_ITER(默认 2),便于 ablation。
         """
-        expansion = s["expansion"]
-        chosen = s.get("std_concept")
-        chosen_name = chosen.get("concept_name") if chosen else None
+        if max_iter is None:
+            max_iter = int(os.getenv("REFLECT_MAX_ITER", "2"))
+        tried = {s["expansion"].strip().lower()}
+        for iter_index in range(max_iter):
+            rank_before = self._std_rank(s)
+            if rank_before == 2:
+                return  # 已精确同名,不可能更好
+            chosen = s.get("std_concept")
+            chosen_name = chosen.get("concept_name") if chosen else None
+            seen = [c["concept_name"] for c in s["std_cache"]]
+            requeries = self.verifier.propose_requeries(s["expansion"], chosen_name, seen) or []
+            new_terms = [q for q in requeries if q.strip().lower() not in tried]
+            if not new_terms:
+                return  # 没有没试过的新方向
+            tried.update(q.strip().lower() for q in new_terms)
 
-        # 已经是精确同名 -> 无需反思
-        if chosen_name and chosen_name.strip().lower() == expansion.strip().lower():
-            return
+            pool = {c["concept_id"]: c for c in s["std_cache"]}
+            for rq in new_terms:
+                docs = self.retriever.retrieve(
+                    query=rq,
+                    top_k=10,
+                    domain_filter=None,
+                    domain_boost=s.get("domain"),
+                    score_threshold=0.6,
+                    source=self._route_source(s.get("domain")),
+                )
+                for doc in docs:
+                    md = doc["metadata"]
+                    if md["concept_id"] not in pool:
+                        pool[md["concept_id"]] = {
+                            "concept_id": md["concept_id"],
+                            "concept_name": md["concept_name"],
+                            "domain_id": md["domain_id"],
+                            "concept_code": md["concept_code"],
+                            "score": md["score"],
+                            "rerank_score": md.get("rerank_score"),
+                        }
+            new_cands = sorted(pool.values(), key=lambda c: float(c.get("score") or 0), reverse=True)[:15]
+            if len(new_cands) <= len(s["std_cache"]):
+                return  # 没带回新候选
 
-        seen = [c["concept_name"] for c in s["std_cache"]]
-        requeries = self.verifier.propose_requeries(expansion, chosen_name, seen)
-        if not requeries:
-            return
-
-        # 换同义词重检索,并入候选池去重
-        pool = {c["concept_id"]: c for c in s["std_cache"]}
-        for rq in requeries:
-            docs = self.retriever.retrieve(
-                query=rq,
-                top_k=10,
-                domain_filter=None,
-                domain_boost=s.get("domain"),
-                score_threshold=0.6,
-                source=self._route_source(s.get("domain")),
+            verification = self.verifier.verify_mappings(
+                original_text=original_text,
+                expanded_text=expanded_text,
+                mapping_standardizations=[{
+                    "abbreviation": s["abbreviation"],
+                    "expansion": s["expansion"],
+                    "candidates": new_cands,
+                }],
             )
-            for doc in docs:
-                md = doc["metadata"]
-                if md["concept_id"] not in pool:
-                    pool[md["concept_id"]] = {
-                        "concept_id": md["concept_id"],
-                        "concept_name": md["concept_name"],
-                        "domain_id": md["domain_id"],
-                        "concept_code": md["concept_code"],
-                        "score": md["score"],
-                        "rerank_score": md.get("rerank_score"),
-                    }
-
-        new_cands = sorted(pool.values(), key=lambda c: float(c.get("score") or 0), reverse=True)[:15]
-        if len(new_cands) <= len(s["std_cache"]):
-            return  # 没带回新候选
-
-        verification = self.verifier.verify_mappings(
-            original_text=original_text,
-            expanded_text=expanded_text,
-            mapping_standardizations=[{
-                "abbreviation": s["abbreviation"],
-                "expansion": expansion,
-                "candidates": new_cands,
-            }],
-        )
-        vs = verification.get("mapping_validations", [])
-        v = vs[0] if vs else None
-        ci = v.get("chosen_index") if v else None
-        faithful = bool(v and v.get("standardization_faithful") is True)
-        if faithful and isinstance(ci, int) and not isinstance(ci, bool) and 0 <= ci < len(new_cands):
-            refined = new_cands[ci]
-            requery_names = {rq.strip().lower() for rq in requeries}
-            if refined.get("concept_name", "").strip().lower() in requery_names:
-                s["std_cache"] = new_cands
-                s["std_concept"] = refined
+            vs = verification.get("mapping_validations", [])
+            v = vs[0] if vs else None
+            ci = v.get("chosen_index") if v else None
+            faithful = bool(v and v.get("standardization_faithful") is True)
+            accepted = False
+            if faithful and isinstance(ci, int) and not isinstance(ci, bool) and 0 <= ci < len(new_cands):
+                refined = new_cands[ci]
+                requery_names = {q.strip().lower() for q in new_terms}
+                if refined.get("concept_name", "").strip().lower() in requery_names:
+                    refined_rank = 2 if refined.get("concept_name", "").strip().lower() == s["expansion"].strip().lower() else 1
+                    if refined_rank <= rank_before:
+                        if iter_index == 0:
+                            s["std_cache"] = new_cands
+                            s["std_concept"] = refined
+                        return  # 首轮保留单趟反思;后续横移不采纳,避免多轮扰动
+                    s["std_cache"] = new_cands
+                    s["std_concept"] = refined
+                    accepted = True
+            if not accepted:
+                return  # 本轮没产出可采纳结果
+        return
 
     def expand_verify_with_retry(self, text: str, max_retries: int = 2):
         """Expand abbreviations, standardize, and verify with a unified data flow.

@@ -106,4 +106,19 @@ CONCEPT_BENCHMARK_CASES = [
         "prefer": "nitroglycerin", "accept": [], "confirmed": True,
         "note": "Drug→RxNorm;首跑确认",
     },
+    {
+        "label": "HBP", "expansion": "high blood pressure", "expect": "concept",
+        "prefer": "Hypertensive disorder", "accept": [], "confirmed": False,
+        "note": "L3-6d 多轮观察:俗称→规范;待 ablation 锁定实际概念名",
+    },
+    {
+        "label": "HRTATTACK", "expansion": "heart attack", "expect": "concept",
+        "prefer": "Myocardial infarction", "accept": [], "confirmed": False,
+        "note": "L3-6d 多轮观察:俗称→规范;待锁定",
+    },
+    {
+        "label": "FLUID_LUNG", "expansion": "fluid in the lungs", "expect": "concept",
+        "prefer": "Pulmonary edema", "accept": [], "confirmed": False,
+        "note": "L3-6d 多轮观察:俗称→规范;待锁定",
+    },
 ]

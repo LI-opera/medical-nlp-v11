@@ -6060,7 +6060,248 @@ index 99b6261..f9505e7 100644
 +        return results
 ```
 
-##
+## 2026-06-26 L3 Stage6d：反思真迭代进入生产
+
+### 修改目的
+
+把生产链路中的 standardization reflection 从“一次性单趟”升级为可配置的有界自纠环：每轮换同义词重检索、verify 重判，并通过质量秩和早停规则控制是否继续。默认 `REFLECT_MAX_ITER=2`，用于让 agentic 反思不只停留在 LangGraph 可视化图里，而是真正服务 `ABBRService.expand_verify_with_retry`。
+
+### 修改文件
+
+- `backend/services/abbr_service.py`
+- `backend/evaluation/concept_benchmark_cases.py`
+- `项目梳理/后续改进/codex对项目的改动日志.md`
+
+### 实现要点
+
+- 新增 `_std_rank(s)`：
+  - `2` = 精确同名
+  - `1` = 忠实非同名
+  - `0` = 弃码
+- `_reflect_refine_standardization` 增加 `max_iter` 参数，默认读取环境变量 `REFLECT_MAX_ITER`，默认值为 `2`。
+- 每轮反思流程为：
+  - 根据当前候选和已选概念调用 `propose_requeries`
+  - 过滤已经尝试过的改写词
+  - 按当前 mapping 的 `domain` 路由重检索
+  - 合并新候选并重新 verify
+  - 通过“忠实 + 选中概念名来自本轮改写词”的保守门后才考虑写回
+- 调试中发现，如果后续轮次允许同秩横移，老用例 CAD 可能在 accept 集内从 `Disorder of coronary artery` 横移到 `Ischemic heart disease`。为满足“老 16 条不被多轮扰动”的不变量，最终策略调整为：
+  - 第 1 轮保留既有单趟 reflection 行为，允许保守门下的规范化横移，例如 `SOB → Dyspnea`。
+  - 第 2 轮及以后只在质量秩严格升高时写回；同秩横移不采纳，避免多轮额外扰动。
+- concept benchmark 末尾新增 3 条 `confirmed=False` 的俗称观察样本：
+  - `high blood pressure`
+  - `heart attack`
+  - `fluid in the lungs`
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/services backend/evaluation`：通过。
+- `REFLECT_MAX_ITER=1` 跑 `.venv\Scripts\python.exe backend/evaluation/run_concept_benchmark.py`：通过。
+  - 老 16 条硬 gold：PASS `16/16 = 1.0000`，canonical `15/16 = 0.9375`。
+  - 新观察样本：
+    - `HBP / high blood pressure`：选中 `Increased blood pressure`，faithful=True，但不在当前 prefer/accept 内，暂不锁定。
+    - `HRTATTACK / heart attack`：选中 `Myocardial infarction`。
+    - `FLUID_LUNG / fluid in the lungs`：选中 `Pulmonary edema`。
+- `REFLECT_MAX_ITER=2` 跑 `.venv\Scripts\python.exe backend/evaluation/run_concept_benchmark.py`：通过。
+  - 老 16 条硬 gold：PASS `16/16 = 1.0000`，canonical `15/16 = 0.9375`。
+  - 新观察样本与 `max_iter=1` 指标一致；本批数据上第 2 轮没有带来额外可量化收益。
+  - 备注：一次 `max_iter=2` 输出中 CAD 在 accept 集内显示为 `Ischemic heart disease`，而 `max_iter=1` 复跑显示为 `Disorder of coronary artery`；二者均在 gold accept 内，汇总指标不变。已通过“后续轮次不采纳同秩横移”降低多轮扰动风险。
+- `.venv\Scripts\python.exe backend/evaluation/run_benchmark.py`：通过，Total Cases `74`，Correct `71`，Expansion Accuracy `0.9595`。
+- `.venv\Scripts\python.exe backend/graph/render_graph.py`：通过，parity `ALL PASS`。
+
+### 回滚与排查提示
+
+- 回滚生产逻辑：删除 `_std_rank`，把 `_reflect_refine_standardization` 退回 Stage6d 前的单趟版。
+- 回滚评测样本：删除 `concept_benchmark_cases.py` 末尾 3 条 `confirmed=False` 俗称样本。
+- 若后续发现 old gold 被扰动，优先检查后续轮次是否采纳了同秩横移，以及 `REFLECT_MAX_ITER` 是否被外部环境设得过高。
+- HBP 当前实际选中 `Increased blood pressure`，暂不锁定；后续若接受该忠实俗称概念，可将其加入 `accept` 或调整 prefer 后再翻 `confirmed=True`。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/evaluation/concept_benchmark_cases.py b/backend/evaluation/concept_benchmark_cases.py
+index ba68569..1f3d1a0 100644
+--- a/backend/evaluation/concept_benchmark_cases.py
++++ b/backend/evaluation/concept_benchmark_cases.py
+@@ -106,4 +106,19 @@ CONCEPT_BENCHMARK_CASES = [
+         "prefer": "nitroglycerin", "accept": [], "confirmed": True,
+         "note": "Drug→RxNorm;首跑确认",
+     },
++    {
++        "label": "HBP", "expansion": "high blood pressure", "expect": "concept",
++        "prefer": "Hypertensive disorder", "accept": [], "confirmed": False,
++        "note": "L3-6d 多轮观察:俗称→规范;待 ablation 锁定实际概念名",
++    },
++    {
++        "label": "HRTATTACK", "expansion": "heart attack", "expect": "concept",
++        "prefer": "Myocardial infarction", "accept": [], "confirmed": False,
++        "note": "L3-6d 多轮观察:俗称→规范;待锁定",
++    },
++    {
++        "label": "FLUID_LUNG", "expansion": "fluid in the lungs", "expect": "concept",
++        "prefer": "Pulmonary edema", "accept": [], "confirmed": False,
++        "note": "L3-6d 多轮观察:俗称→规范;待锁定",
++    },
+ ]
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index 3f06d27..5c7e9b4 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -98,69 +98,92 @@ class ABBRService:
+     def _route_source(domain):
+         return "rxnorm" if domain == "Drug" else "snomed"
+ 
+-    def _reflect_refine_standardization(self, s, original_text, expanded_text):
+-        """batch10 标准化反思:非精确同名(或弃码)时,换同义词重检索一次。
+-        verify 在更全候选池中重选;只升级不强压,原候选仍在池中可回退。
++    @staticmethod
++    def _std_rank(s):
++        """标准化质量秩:2=精确同名,1=忠实非同名,0=弃码。"""
++        sc = s.get("std_concept")
++        if not sc:
++            return 0
++        name = (sc.get("concept_name") or "").strip().lower()
++        return 2 if name == s["expansion"].strip().lower() else 1
++
++    def _reflect_refine_standardization(self, s, original_text, expanded_text, max_iter=None):
++        """batch10 → L3-6d:标准化反思【真迭代】。
++        每轮:非精确同名(或弃码)时换同义词重检索 → verify 重选(保守门);
++        只有本轮秩严格变高才再来一轮,否则停。带新证据,非同源复判。
++        max_iter 默认读 env REFLECT_MAX_ITER(默认 2),便于 ablation。
+         """
+-        expansion = s["expansion"]
+-        chosen = s.get("std_concept")
+-        chosen_name = chosen.get("concept_name") if chosen else None
+-
+-        # 已经是精确同名 -> 无需反思
+-        if chosen_name and chosen_name.strip().lower() == expansion.strip().lower():
+-            return
+-
+-        seen = [c["concept_name"] for c in s["std_cache"]]
+-        requeries = self.verifier.propose_requeries(expansion, chosen_name, seen)
+-        if not requeries:
+-            return
+-
+-        # 换同义词重检索,并入候选池去重
+-        pool = {c["concept_id"]: c for c in s["std_cache"]}
+-        for rq in requeries:
+-            docs = self.retriever.retrieve(
+-                query=rq,
+-                top_k=10,
+-                domain_filter=None,
+-                domain_boost=s.get("domain"),
+-                score_threshold=0.6,
+-                source=self._route_source(s.get("domain")),
+-            )
+-            for doc in docs:
+-                md = doc["metadata"]
+-                if md["concept_id"] not in pool:
+-                    pool[md["concept_id"]] = {
+-                        "concept_id": md["concept_id"],
+-                        "concept_name": md["concept_name"],
+-                        "domain_id": md["domain_id"],
+-                        "concept_code": md["concept_code"],
+-                        "score": md["score"],
+-                        "rerank_score": md.get("rerank_score"),
+-                    }
++        if max_iter is None:
++            max_iter = int(os.getenv("REFLECT_MAX_ITER", "2"))
++        tried = {s["expansion"].strip().lower()}
++        for iter_index in range(max_iter):
++            rank_before = self._std_rank(s)
++            if rank_before == 2:
++                return  # 已精确同名,不可能更好
++            chosen = s.get("std_concept")
++            chosen_name = chosen.get("concept_name") if chosen else None
++            seen = [c["concept_name"] for c in s["std_cache"]]
++            requeries = self.verifier.propose_requeries(s["expansion"], chosen_name, seen) or []
++            new_terms = [q for q in requeries if q.strip().lower() not in tried]
++            if not new_terms:
++                return  # 没有没试过的新方向
++            tried.update(q.strip().lower() for q in new_terms)
++
++            pool = {c["concept_id"]: c for c in s["std_cache"]}
++            for rq in new_terms:
++                docs = self.retriever.retrieve(
++                    query=rq,
++                    top_k=10,
++                    domain_filter=None,
++                    domain_boost=s.get("domain"),
++                    score_threshold=0.6,
++                    source=self._route_source(s.get("domain")),
++                )
++                for doc in docs:
++                    md = doc["metadata"]
++                    if md["concept_id"] not in pool:
++                        pool[md["concept_id"]] = {
++                            "concept_id": md["concept_id"],
++                            "concept_name": md["concept_name"],
++                            "domain_id": md["domain_id"],
++                            "concept_code": md["concept_code"],
++                            "score": md["score"],
++                            "rerank_score": md.get("rerank_score"),
++                        }
++            new_cands = sorted(pool.values(), key=lambda c: float(c.get("score") or 0), reverse=True)[:15]
++            if len(new_cands) <= len(s["std_cache"]):
++                return  # 没带回新候选
+ 
+-        new_cands = sorted(pool.values(), key=lambda c: float(c.get("score") or 0), reverse=True)[:15]
+-        if len(new_cands) <= len(s["std_cache"]):
+-            return  # 没带回新候选
+-
+-        verification = self.verifier.verify_mappings(
+-            original_text=original_text,
+-            expanded_text=expanded_text,
+-            mapping_standardizations=[{
+-                "abbreviation": s["abbreviation"],
+-                "expansion": expansion,
+-                "candidates": new_cands,
+-            }],
+-        )
+-        vs = verification.get("mapping_validations", [])
+-        v = vs[0] if vs else None
+-        ci = v.get("chosen_index") if v else None
+-        faithful = bool(v and v.get("standardization_faithful") is True)
+-        if faithful and isinstance(ci, int) and not isinstance(ci, bool) and 0 <= ci < len(new_cands):
+-            refined = new_cands[ci]
+-            requery_names = {rq.strip().lower() for rq in requeries}
+-            if refined.get("concept_name", "").strip().lower() in requery_names:
+-                s["std_cache"] = new_cands
+-                s["std_concept"] = refined
++            verification = self.verifier.verify_mappings(
++                original_text=original_text,
++                expanded_text=expanded_text,
++                mapping_standardizations=[{
++                    "abbreviation": s["abbreviation"],
++                    "expansion": s["expansion"],
++                    "candidates": new_cands,
++                }],
++            )
++            vs = verification.get("mapping_validations", [])
++            v = vs[0] if vs else None
++            ci = v.get("chosen_index") if v else None
++            faithful = bool(v and v.get("standardization_faithful") is True)
++            accepted = False
++            if faithful and isinstance(ci, int) and not isinstance(ci, bool) and 0 <= ci < len(new_cands):
++                refined = new_cands[ci]
++                requery_names = {q.strip().lower() for q in new_terms}
++                if refined.get("concept_name", "").strip().lower() in requery_names:
++                    refined_rank = 2 if refined.get("concept_name", "").strip().lower() == s["expansion"].strip().lower() else 1
++                    if refined_rank <= rank_before:
++                        if iter_index == 0:
++                            s["std_cache"] = new_cands
++                            s["std_concept"] = refined
++                        return  # 首轮保留单趟反思;后续横移不采纳,避免多轮扰动
++                    s["std_cache"] = new_cands
++                    s["std_concept"] = refined
++                    accepted = True
++            if not accepted:
++                return  # 本轮没产出可采纳结果
++        return
+ 
+     def expand_verify_with_retry(self, text: str, max_retries: int = 2):
+         """Expand abbreviations, standardize, and verify with a unified data flow.
+```
 
 ## 2026-06-26 L3 Stage3：标准化检索按 NER domain 路由（Drug→RxNorm，其它→SNOMED）
 
