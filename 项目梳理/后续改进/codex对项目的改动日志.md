@@ -6146,4 +6146,138 @@ index 0de7534..3f06d27 100644
                      {
 ```
 
-1
+## 2026-06-26 L3 Stage4：补药品缩写与 RxNorm 药品 gold
+
+### 修改目的
+
+Stage-3 已经接通 `Drug → rxnorm` 的确定性标准化路由，但此前没有真正的 `domain="Drug"` 输入。本轮补入一组成分级药品缩写，并在 concept benchmark 中加入药品 gold，让 RxNorm 第二知识源第一次进入可量化评测。
+
+### 修改文件
+
+- `backend/data/abbr_candidates.py`
+- `backend/evaluation/concept_benchmark_cases.py`
+- `backend/evaluation/run_concept_benchmark.py`
+- `项目梳理/后续改进/codex对项目的改动日志.md`
+
+### 实现要点
+
+- 在 `ABBR_CANDIDATES` 中新增 5 个成分级药品缩写：
+  - `ASA → aspirin`
+  - `MTX → methotrexate`
+  - `APAP → acetaminophen`
+  - `HCTZ → hydrochlorothiazide`
+  - `NTG → nitroglycerin`
+- 以上新增词典条目统一标记 `domain="Drug"`，生产链路会经 Stage-3 的 `_route_source` 自动路由到 RxNorm。
+- 在 `concept_benchmark_cases.py` 新增 5 条 Drug concept gold。
+- 首跑时 5 条药品 gold 均命中 RxNorm ingredient 概念名，且实际选中名与预填 `prefer` 完全一致，因此本轮已将它们锁定为 `confirmed=True`。
+- `run_concept_benchmark.py` 初次检索增加 `source=svc._route_source(case.get("domain"))`，反思精炼用的 `s["domain"]` 也改为 `case.get("domain")`。
+- 旧 11 条 concept benchmark 没有 `domain` 字段，仍默认走 `snomed`，保持行为中性。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/services backend/evaluation backend/data`：通过。
+- `.venv\Scripts\python.exe -c "import sys; sys.path.append('backend'); from services.abbr_service import ABBRService as A; print(A._route_source('Drug'), A._route_source(None))"`：通过，输出 `rxnorm snomed`。
+- 首跑 `.venv\Scripts\python.exe backend/evaluation/run_concept_benchmark.py`：
+  - 老 11 条硬 gold：PASS `11/11 = 1.0000`，canonical `10/11 = 0.9091`。
+  - 新 5 条药品用例在待锁定区均 PASS，实际选中名分别为 `aspirin`、`methotrexate`、`acetaminophen`、`hydrochlorothiazide`、`nitroglycerin`。
+- 锁定药品 gold 为 `confirmed=True` 后二跑 `.venv\Scripts\python.exe backend/evaluation/run_concept_benchmark.py`：PASS `16/16 = 1.0000`，canonical `15/16 = 0.9375`。
+- `.venv\Scripts\python.exe backend/evaluation/run_benchmark.py`：Total Cases `74`，Correct `71`，Expansion Accuracy `0.9595`，与 Stage3 持平。
+- 端到端冒烟：`The patient took ASA for chest pain.` 经 `expand_verify_with_retry` 后输出 `The patient took aspirin for chest pain.`，`ASA` 候选 domain 为 `Drug`，标准化命中 RxNorm Drug 概念 `aspirin`，concept_code `1191`。
+
+### 回滚与排查提示
+
+- 回滚词典：删除 `abbr_candidates.py` 中新增的 Drug 段。
+- 回滚评测：删除 `concept_benchmark_cases.py` 中 5 条药品 gold。
+- 回滚 runner：删除 `run_concept_benchmark.py` 的 `source=svc._route_source(case.get("domain"))`，并把反思 `s["domain"]` 改回 `None`。
+- 若药品 gold 失败，优先确认 `rxnorm_concepts` 是否存在并 load，且 Stage-3 的 `_route_source("Drug")` 是否仍返回 `rxnorm`。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/data/abbr_candidates.py b/backend/data/abbr_candidates.py
+index 9ca5795..73fce1f 100644
+--- a/backend/data/abbr_candidates.py
++++ b/backend/data/abbr_candidates.py
+@@ -182,4 +182,21 @@ ABBR_CANDIDATES = {
+     "K": [
+         {"expansion": "potassium", "domain": "Measurement"},
+     ],
++
++    # Drugs (ingredient-level; domain=Drug → 路由到 RxNorm)
++    "ASA": [
++        {"expansion": "aspirin", "domain": "Drug"},
++    ],
++    "MTX": [
++        {"expansion": "methotrexate", "domain": "Drug"},
++    ],
++    "APAP": [
++        {"expansion": "acetaminophen", "domain": "Drug"},
++    ],
++    "HCTZ": [
++        {"expansion": "hydrochlorothiazide", "domain": "Drug"},
++    ],
++    "NTG": [
++        {"expansion": "nitroglycerin", "domain": "Drug"},
++    ],
+ }
+diff --git a/backend/evaluation/concept_benchmark_cases.py b/backend/evaluation/concept_benchmark_cases.py
+index 72568e1..ba68569 100644
+--- a/backend/evaluation/concept_benchmark_cases.py
++++ b/backend/evaluation/concept_benchmark_cases.py
+@@ -76,4 +76,34 @@ CONCEPT_BENCHMARK_CASES = [
+         "prefer": "Breathing room air", "accept": [], "confirmed": True,
+         "note": "首跑 verify 选 'Breathing room air'(忠实),原弃码假设错;本集暂无真负例待补",
+     },
++    {
++        "label": "ASA", "expansion": "aspirin", "expect": "concept",
++        "domain": "Drug",
++        "prefer": "aspirin", "accept": [], "confirmed": True,
++        "note": "Drug→RxNorm;首跑确认 ingredient 概念名",
++    },
++    {
++        "label": "MTX", "expansion": "methotrexate", "expect": "concept",
++        "domain": "Drug",
++        "prefer": "methotrexate", "accept": [], "confirmed": True,
++        "note": "Drug→RxNorm;首跑确认",
++    },
++    {
++        "label": "APAP", "expansion": "acetaminophen", "expect": "concept",
++        "domain": "Drug",
++        "prefer": "acetaminophen", "accept": [], "confirmed": True,
++        "note": "Drug→RxNorm;首跑确认(美式 RxNorm 用 acetaminophen)",
++    },
++    {
++        "label": "HCTZ", "expansion": "hydrochlorothiazide", "expect": "concept",
++        "domain": "Drug",
++        "prefer": "hydrochlorothiazide", "accept": [], "confirmed": True,
++        "note": "Drug→RxNorm;首跑确认",
++    },
++    {
++        "label": "NTG", "expansion": "nitroglycerin", "expect": "concept",
++        "domain": "Drug",
++        "prefer": "nitroglycerin", "accept": [], "confirmed": True,
++        "note": "Drug→RxNorm;首跑确认",
++    },
+ ]
+diff --git a/backend/evaluation/run_concept_benchmark.py b/backend/evaluation/run_concept_benchmark.py
+index 192a609..d3e8f38 100644
+--- a/backend/evaluation/run_concept_benchmark.py
++++ b/backend/evaluation/run_concept_benchmark.py
+@@ -76,6 +76,7 @@ def main():
+                 top_k=TOP_K,
+                 domain_filter=None,
+                 score_threshold=SCORE_TH,
++                source=svc._route_source(case.get("domain")),
+             )
+         ]
+         res = svc.verifier.verify_mappings(
+@@ -100,7 +101,7 @@ def main():
+             "expansion": case["expansion"],
+             "std_cache": cands,
+             "std_concept": init,
+-            "domain": None,
++            "domain": case.get("domain"),
+         }
+         svc._reflect_refine_standardization(s, original_text, expanded_text)
+         chosen = s["std_concept"]["concept_name"] if s.get("std_concept") else None
+```

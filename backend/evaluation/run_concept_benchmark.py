@@ -76,6 +76,7 @@ def main():
                 top_k=TOP_K,
                 domain_filter=None,
                 score_threshold=SCORE_TH,
+                source=svc._route_source(case.get("domain")),
             )
         ]
         res = svc.verifier.verify_mappings(
@@ -100,7 +101,7 @@ def main():
             "expansion": case["expansion"],
             "std_cache": cands,
             "std_concept": init,
-            "domain": None,
+            "domain": case.get("domain"),
         }
         svc._reflect_refine_standardization(s, original_text, expanded_text)
         chosen = s["std_concept"]["concept_name"] if s.get("std_concept") else None

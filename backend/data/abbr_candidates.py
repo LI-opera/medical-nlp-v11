@@ -182,4 +182,21 @@ ABBR_CANDIDATES = {
     "K": [
         {"expansion": "potassium", "domain": "Measurement"},
     ],
+
+    # Drugs (ingredient-level; domain=Drug → 路由到 RxNorm)
+    "ASA": [
+        {"expansion": "aspirin", "domain": "Drug"},
+    ],
+    "MTX": [
+        {"expansion": "methotrexate", "domain": "Drug"},
+    ],
+    "APAP": [
+        {"expansion": "acetaminophen", "domain": "Drug"},
+    ],
+    "HCTZ": [
+        {"expansion": "hydrochlorothiazide", "domain": "Drug"},
+    ],
+    "NTG": [
+        {"expansion": "nitroglycerin", "domain": "Drug"},
+    ],
 }

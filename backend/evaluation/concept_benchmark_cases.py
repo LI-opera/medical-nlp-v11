@@ -76,4 +76,34 @@ CONCEPT_BENCHMARK_CASES = [
         "prefer": "Breathing room air", "accept": [], "confirmed": True,
         "note": "首跑 verify 选 'Breathing room air'(忠实),原弃码假设错;本集暂无真负例待补",
     },
+    {
+        "label": "ASA", "expansion": "aspirin", "expect": "concept",
+        "domain": "Drug",
+        "prefer": "aspirin", "accept": [], "confirmed": True,
+        "note": "Drug→RxNorm;首跑确认 ingredient 概念名",
+    },
+    {
+        "label": "MTX", "expansion": "methotrexate", "expect": "concept",
+        "domain": "Drug",
+        "prefer": "methotrexate", "accept": [], "confirmed": True,
+        "note": "Drug→RxNorm;首跑确认",
+    },
+    {
+        "label": "APAP", "expansion": "acetaminophen", "expect": "concept",
+        "domain": "Drug",
+        "prefer": "acetaminophen", "accept": [], "confirmed": True,
+        "note": "Drug→RxNorm;首跑确认(美式 RxNorm 用 acetaminophen)",
+    },
+    {
+        "label": "HCTZ", "expansion": "hydrochlorothiazide", "expect": "concept",
+        "domain": "Drug",
+        "prefer": "hydrochlorothiazide", "accept": [], "confirmed": True,
+        "note": "Drug→RxNorm;首跑确认",
+    },
+    {
+        "label": "NTG", "expansion": "nitroglycerin", "expect": "concept",
+        "domain": "Drug",
+        "prefer": "nitroglycerin", "accept": [], "confirmed": True,
+        "note": "Drug→RxNorm;首跑确认",
+    },
 ]
