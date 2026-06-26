@@ -5904,3 +5904,244 @@ index 0000000..654b150
 +if __name__ == "__main__":
 +    main()
 ```
+
+## 2026-06-25 L3 Stage2：检索器按源查询（SNOMED / RxNorm）
+
+### 修改目的
+
+L3 多源路由第二阶段让检索层具备按源查询能力：默认继续查 SNOMED 的 `concepts_only_name`，显式 `source="rxnorm"` 时查 Stage1 建好的 `rxnorm_concepts`。本批次只改检索层，不接 Stage3 路由，现有调用不传 `source` 时应保持默认 SNOMED 行为。
+
+### 修改文件
+
+- `backend/services/std_service.py`
+- `backend/services/medical_retriever.py`
+
+### 实现要点
+
+- `StdService` 新增 `collections` 映射：
+  - `snomed` -> `MILVUS_COLLECTION_NAME` 或默认 `concepts_only_name`
+  - `rxnorm` -> `MILVUS_RXNORM_COLLECTION` 或默认 `rxnorm_concepts`
+- `StdService.search_similar_terms()` 新增 `source: str = "snomed"`，未知 source 自动回退默认 SNOMED。
+- `StdService` 默认预加载 SNOMED collection，其它源首次检索时按需 `load_collection()`。
+- `MedicalRetriever.retrieve()` 新增 `source: str = "snomed"`，并透传给 `std_service.search_similar_terms()`。
+- 其余 rerank、domain_filter、score_threshold、document metadata 输出结构未改。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/services`：通过。
+- `ABBRService` 干净 import：通过。
+- 多源冒烟：
+  - `r.retrieve(query="aspirin", top_k=3, source="rxnorm")` 返回：`['aspirin', 'aspirin Oral Tablet', 'aspirin 100 MG']`
+  - `r.retrieve(query="chest pain", top_k=3, source="snomed")` 返回：`['Chest pain', 'Cardiac chest pain', 'Chest wall pain']`
+- concept benchmark：通过，默认 SNOMED 行为保持：
+  - PASS：`11/11 = 1.0000`
+  - canonical：`10/11 = 0.9091`
+- main benchmark：
+  - 已运行 `.venv\Scripts\python.exe backend/evaluation/run_benchmark.py`。
+  - 本轮工具层长时间等待后超时，`benchmark_results.json` 未更新，残留 Python 进程已清理。
+  - 因主 benchmark 未得到完整结果，本批次当前不应视为“全验收通过”。
+
+### 回滚与排查提示
+
+- 若需回滚代码，只回退 `backend/services/std_service.py` 和 `backend/services/medical_retriever.py`。
+- `source` 默认值为 `snomed`，不传 source 的旧调用理论上仍查 `concepts_only_name`。
+- 如果 RxNorm 检索失败，先检查 Stage1 的 `rxnorm_concepts` 是否存在并 loaded，当前已验证 `aspirin` 可命中。
+- 如果主 benchmark 继续卡住，建议单独重跑并观察 LLM/API 卡点；本轮代码层 smoke 与 concept benchmark 已通过，但 main benchmark 尚未完成。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/services/medical_retriever.py b/backend/services/medical_retriever.py
+index 1aa9dfa..1ce1576 100644
+--- a/backend/services/medical_retriever.py
++++ b/backend/services/medical_retriever.py
+@@ -80,10 +80,11 @@ class MedicalRetriever:
+             #表示优先提升的领域，不过滤其他领域
+             domain_boost: str | None = None,
+             #表示过滤的最低分数
+-            score_threshold:float | None = None
++            score_threshold:float | None = None,
++            source: str = "snomed",
+             ):
+         #根据用户数插入检索最相关的医学术语
+-        results = self.std_service.search_similar_terms(query=query,limit=top_k)
++        results = self.std_service.search_similar_terms(query=query, limit=top_k, source=source)
+         results = self._rerank_results(query, results, domain_boost)
+         documents = []
+         for item in results:
+diff --git a/backend/services/std_service.py b/backend/services/std_service.py
+index 99b6261..f9505e7 100644
+--- a/backend/services/std_service.py
++++ b/backend/services/std_service.py
+@@ -1,38 +1,35 @@
+-# 接收用户输入
+-#     ↓
+-# 把输入变成 query vector
+-#     ↓
+-# 去 Milvus 里搜索
+-#     ↓
+-# 返回最相似医学术语
+ import os
++
+ from pymilvus import MilvusClient
+
+ from utils.embedding_config import EmbeddingConfig
+ from utils.embedding_factory import create_embedding_model
+
++
+ class StdService:
+-    #因为这个类是用来搜索的所以在初始化时应该保证cllection已经load
+     def __init__(self):
+-        self.collection_name = os.getenv(
+-            "MILVUS_COLLECTION_NAME",
+-            "concepts_only_name"
+-        )
+-
+-        self.milvus_uri = os.getenv(
+-            "MILVUS_URI",
+-            "http://127.0.0.1:19530"
+-        )
+-
++        self.collections = {
++            "snomed": os.getenv("MILVUS_COLLECTION_NAME", "concepts_only_name"),
++            "rxnorm": os.getenv("MILVUS_RXNORM_COLLECTION", "rxnorm_concepts"),
++        }
++        self.default_source = "snomed"
++        self.milvus_uri = os.getenv("MILVUS_URI", "http://127.0.0.1:19530")
+         self.embedding_model = create_embedding_model(EmbeddingConfig())
+-
+         self.client = MilvusClient(uri=self.milvus_uri)
++        self._loaded = set()
++        self._ensure_loaded(self.collections[self.default_source])
+
+-        self.client.load_collection(collection_name=self.collection_name)
+-    def search_similar_terms(self,query:str,limit:int=5):
++    def _ensure_loaded(self, collection_name):
++        if collection_name not in self._loaded:
++            self.client.load_collection(collection_name=collection_name)
++            self._loaded.add(collection_name)
++
++    def search_similar_terms(self, query: str, limit: int = 5, source: str = "snomed"):
++        collection = self.collections.get(source, self.collections[self.default_source])
++        self._ensure_loaded(collection)
+         query_vector = self.embedding_model.embed_query(query)
+         search_result = self.client.search(
+-            collection_name=self.collection_name,
++            collection_name=collection,
+             data=[query_vector],
+             anns_field="vector",
+             limit=limit,
+@@ -41,11 +38,10 @@ class StdService:
+                 "concept_name",
+                 "domain_id",
+                 "concept_code",
+-                "FSN"
+-            ]
++                "FSN",
++            ],
+         )
+         results = []
+-
+         for item in search_result[0]:
+             entity = item["entity"]
+             results.append({
+@@ -54,8 +50,7 @@ class StdService:
+                 "concept_name": entity["concept_name"],
+                 "domain_id": entity["domain_id"],
+                 "concept_code": entity["concept_code"],
+-                "FSN":entity["FSN"],
+-                #round(数字, 保留几位)
+-                "score": round(item["distance"],4)
++                "FSN": entity["FSN"],
++                "score": round(item["distance"], 4),
+             })
+-        return results
+\ No newline at end of file
++        return results
+```
+
+##
+
+## 2026-06-26 L3 Stage3：标准化检索按 NER domain 路由（Drug→RxNorm，其它→SNOMED）
+
+### 修改目的
+
+Stage-2 已经让检索器支持按 `source` 选择 SNOMED / RxNorm collection。本轮 Stage-3 只在 `ABBRService` 的标准化检索入口接上确定性路由：当 mapping 的 `domain == "Drug"` 时走 `rxnorm`，其它 domain 继续走 `snomed`。本轮不增加 LLM 调用、不修改检索器、不修改 verify / coverage。
+
+### 修改文件
+
+- `backend/services/abbr_service.py`
+- `项目梳理/后续改进/codex对项目的改动日志.md`
+
+### 实现要点
+
+- 在 `ABBRService` 中新增 `_route_source(domain)` 静态 helper：
+  - `Drug` → `rxnorm`
+  - 其它 domain 或空值 → `snomed`
+- `expand_verify_with_retry` 主标准化候选检索增加 `source=self._route_source(r.get("domain"))`。
+- `_reflect_refine_standardization` 反思重检索增加 `source=self._route_source(s.get("domain"))`。
+- 保持 `domain_boost` 软加分逻辑不变，只额外把 domain 升级为确定性选库开关。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/services`：通过。
+- `.venv\Scripts\python.exe -c "import sys; sys.path.append('backend'); from services.abbr_service import ABBRService as A; print(A._route_source('Drug'), A._route_source('Condition'), A._route_source(None))"`：通过，输出 `rxnorm snomed snomed`。
+- `git diff --check -- backend/services/abbr_service.py`：通过；仅提示工作区 LF 未来可能被 Git 触碰为 CRLF，不是 whitespace error。
+- 首次运行 `backend/evaluation/run_concept_benchmark.py`：未完成。失败原因是当时本机 Milvus 未启动/不可连接，报错 `Fail connecting to server on localhost:19530, illegal connection params or server unavailable`。
+- 用户启动 Milvus 后复验：`.venv\Scripts\python.exe -c "from pymilvus import MilvusClient; c=MilvusClient(uri='http://127.0.0.1:19530'); print(c.list_collections())"`：通过，确认存在 `concepts_only_name` 与 `rxnorm_concepts`。
+- `.venv\Scripts\python.exe backend/evaluation/run_concept_benchmark.py`：通过，PASS `11/11 = 1.0000`，canonical `10/11 = 0.9091`。
+- `.venv\Scripts\python.exe backend/evaluation/run_benchmark.py`：通过，Total Cases `74`，Correct `71`，Expansion Accuracy `0.9595`。
+
+### 合入状态
+
+- 本轮代码改动已落盘；Milvus 启动后已完成主 benchmark 与 concept benchmark 复验，结果与 Stage3 预期持平。
+- 可以按批次指令提交 `backend/services/abbr_service.py` 与本日志文件；其它历史未提交文件不纳入本轮提交。
+
+### 回滚与排查提示
+
+- 代码回滚只需移除 `ABBRService._route_source`，并删除两处 `retriever.retrieve(...)` 的 `source=` 参数。
+- 如 benchmark 仍无法运行，优先确认 Milvus `localhost:19530` 是否监听，以及 `concepts_only_name` / `rxnorm_concepts` 两个 collection 是否存在且可 load。
+- 当前 Stage3 理论上对现有非 Drug benchmark 应行为中性；真正新增药品能力要等 Stage-4 补药品缩写和药品 gold。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/services/abbr_service.py b/backend/services/abbr_service.py
+index 0de7534..3f06d27 100644
+--- a/backend/services/abbr_service.py
++++ b/backend/services/abbr_service.py
+@@ -94,6 +94,10 @@ class ABBRService:
+             result = result[:start] + expansion + result[end:]
+         return result
+ 
++    @staticmethod
++    def _route_source(domain):
++        return "rxnorm" if domain == "Drug" else "snomed"
++
+     def _reflect_refine_standardization(self, s, original_text, expanded_text):
+         """batch10 标准化反思:非精确同名(或弃码)时,换同义词重检索一次。
+         verify 在更全候选池中重选;只升级不强压,原候选仍在池中可回退。
+@@ -120,6 +124,7 @@ class ABBRService:
+                 domain_filter=None,
+                 domain_boost=s.get("domain"),
+                 score_threshold=0.6,
++                source=self._route_source(s.get("domain")),
+             )
+             for doc in docs:
+                 md = doc["metadata"]
+@@ -260,8 +265,12 @@ class ABBRService:
+             # Retrieve SNOMED candidates for each PENDING record.
+             for r in pending:
+                 docs = self.retriever.retrieve(
+-                    query=r["expansion"], top_k=10, domain_filter=None,
+-                    domain_boost=r.get("domain"), score_threshold=0.6,
++                    query=r["expansion"],
++                    top_k=10,
++                    domain_filter=None,
++                    domain_boost=r.get("domain"),
++                    score_threshold=0.6,
++                    source=self._route_source(r.get("domain")),
+                 )
+                 r["std_cache"] = [
+                     {
+```

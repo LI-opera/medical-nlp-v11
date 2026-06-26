@@ -94,6 +94,10 @@ class ABBRService:
             result = result[:start] + expansion + result[end:]
         return result
 
+    @staticmethod
+    def _route_source(domain):
+        return "rxnorm" if domain == "Drug" else "snomed"
+
     def _reflect_refine_standardization(self, s, original_text, expanded_text):
         """batch10 标准化反思:非精确同名(或弃码)时,换同义词重检索一次。
         verify 在更全候选池中重选;只升级不强压,原候选仍在池中可回退。
@@ -120,6 +124,7 @@ class ABBRService:
                 domain_filter=None,
                 domain_boost=s.get("domain"),
                 score_threshold=0.6,
+                source=self._route_source(s.get("domain")),
             )
             for doc in docs:
                 md = doc["metadata"]
@@ -260,8 +265,12 @@ class ABBRService:
             # Retrieve SNOMED candidates for each PENDING record.
             for r in pending:
                 docs = self.retriever.retrieve(
-                    query=r["expansion"], top_k=10, domain_filter=None,
-                    domain_boost=r.get("domain"), score_threshold=0.6,
+                    query=r["expansion"],
+                    top_k=10,
+                    domain_filter=None,
+                    domain_boost=r.get("domain"),
+                    score_threshold=0.6,
+                    source=self._route_source(r.get("domain")),
                 )
                 r["std_cache"] = [
                     {
