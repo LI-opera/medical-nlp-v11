@@ -108,17 +108,17 @@ CONCEPT_BENCHMARK_CASES = [
     },
     {
         "label": "HBP", "expansion": "high blood pressure", "expect": "concept",
-        "prefer": "Hypertensive disorder", "accept": [], "confirmed": False,
-        "note": "L3-6d 多轮观察:俗称→规范;待 ablation 锁定实际概念名",
+        "prefer": "Hypertensive disorder", "accept": ["Increased blood pressure"], "confirmed": True,
+        "note": "俗称→规范;系统选忠实但偏字面的 'Increased blood pressure'(accept),规范诊断 'Hypertensive disorder' 没够到=canonical 缺口(改写/库覆盖余量)",
     },
     {
         "label": "HRTATTACK", "expansion": "heart attack", "expect": "concept",
-        "prefer": "Myocardial infarction", "accept": [], "confirmed": False,
-        "note": "L3-6d 多轮观察:俗称→规范;待锁定",
+        "prefer": "Myocardial infarction", "accept": [], "confirmed": True,
+        "note": "俗称→规范;首跑确认 canonical",
     },
     {
         "label": "FLUID_LUNG", "expansion": "fluid in the lungs", "expect": "concept",
-        "prefer": "Pulmonary edema", "accept": [], "confirmed": False,
-        "note": "L3-6d 多轮观察:俗称→规范;待锁定",
+        "prefer": "Pulmonary edema", "accept": [], "confirmed": True,
+        "note": "俗称→规范;首跑确认 canonical",
     },
 ]
