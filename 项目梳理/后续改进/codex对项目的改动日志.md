@@ -6282,4 +6282,164 @@ index 192a609..d3e8f38 100644
          chosen = s["std_concept"]["concept_name"] if s.get("std_concept") else None
 ```
 
-1
+## 2026-06-26 L3 Stage5：多源 A/B 量化（SNOMED-only vs RxNorm 路由）
+
+### 修改目的
+
+L3 的多源路由已经能让 `Drug` 走 RxNorm，但需要量化同一批药品词在“强制 SNOMED”与“强制 RxNorm”下的差异。本轮只新增一次性测量脚本，不改主链路、不改 service、不新增 LLM 行为，用于诚实回答“第二知识源到底带来了什么”。
+
+### 修改文件
+
+- `backend/evaluation/run_source_ab.py`
+- `项目梳理/后续改进/codex对项目的改动日志.md`
+
+### 实现要点
+
+- 新增 `run_source_ab.py`，对 5 个药品扩写分别强制跑：
+  - `source="snomed"`
+  - `source="rxnorm"`
+- 每次执行同一套流程：检索 top-10 → verifier 选择忠实概念 → 输出选中概念名、concept_code、domain_id、top1 分数。
+- `top1_score` 取值做了兼容：优先读取 `doc["score"]`，不存在时读取 `doc["metadata"]["score"]`，避免不同 retrieve 返回结构导致脚本报错。
+- 本轮顺手清理了日志文件末尾此前残留的孤立字符 `1`。
+
+### 验证结果
+
+- `.venv\Scripts\python.exe -m compileall backend/evaluation`：通过。
+- `.venv\Scripts\python.exe backend/evaluation/run_source_ab.py`：通过，完整输出如下：
+
+```text
+drug                source  chosen                      code      domain        top1
+----------------------------------------------------------------------------------------
+aspirin             snomed  (弃码)                        None      None          0.8064
+aspirin             rxnorm  aspirin                     1191      Drug          1.0
+
+methotrexate        snomed  (弃码)                        None      None          0.8073
+methotrexate        rxnorm  methotrexate                6851      Drug          1.0
+
+acetaminophen       snomed  (弃码)                        None      None          0.7196
+acetaminophen       rxnorm  acetaminophen               161       Drug          1.0
+
+hydrochlorothiazide snomed  (弃码)                        None      None          0.7965
+hydrochlorothiazide rxnorm  hydrochlorothiazide         5487      Drug          1.0
+
+nitroglycerin       snomed  (弃码)                        None      None          0.8081
+nitroglycerin       rxnorm  nitroglycerin               4917      Drug          1.0
+```
+
+### 量化结论
+
+- 对本轮 5 个成分级药品词，强制走 SNOMED 时虽然有 top1 相似分，但 verifier 全部弃码。
+- 强制走 RxNorm 时全部命中 `Drug` 域 ingredient 概念，且 top1 分数均为 `1.0`。
+- 这说明当前药品缩写场景下，RxNorm 路由不是只改变候选排序，而是直接把“SNOMED 候选不适合/被弃码”的情况变成可编码的药品标准化结果。
+
+### 回滚与排查提示
+
+- 回滚只需删除 `backend/evaluation/run_source_ab.py`。
+- 若脚本失败，优先确认 Milvus 中 `concepts_only_name` 与 `rxnorm_concepts` 两个 collection 均存在，并确认 `.env` 中 DeepSeek key 可用。
+- 若后续 retrieve 返回结构变更，重点检查 `_top1_score` 对分数字段的读取逻辑。
+
+### Git diff（不包含本日志文件）
+
+```diff
+diff --git a/backend/evaluation/run_source_ab.py b/backend/evaluation/run_source_ab.py
+new file mode 100644
+index 0000000..f1e2902
+--- /dev/null
++++ b/backend/evaluation/run_source_ab.py
+@@ -0,0 +1,95 @@
++"""
++L3 Stage-5: 多源 A/B 量化
++
++对每个药品扩写，分别强制走 SNOMED 和 RxNorm，跑 检索 top-10 → verify 选概念，
++并排打印：选中概念名 / concept_code / domain_id / top1 相似分 / 是否弃码。
++
++目的：诚实回答“路由到 RxNorm 相对只用 SNOMED 到底改变了什么”。
++跑法：python backend/evaluation/run_source_ab.py（需 Milvus + DeepSeek key）
++"""
++import os
++import sys
++from pathlib import Path
++
++os.environ["ERROR_LOG_RUNTIME"] = "0"
++
++BACKEND_DIR = Path(__file__).resolve().parents[1]
++sys.path.append(str(BACKEND_DIR))
++
++from services.abbr_service import ABBRService
++
++
++DRUGS = [
++    "aspirin",
++    "methotrexate",
++    "acetaminophen",
++    "hydrochlorothiazide",
++    "nitroglycerin",
++]
++TOP_K = 10
++SCORE_TH = 0.6
++
++
++def _top1_score(doc):
++    if not doc:
++        return None
++    score = doc.get("score")
++    if score is None:
++        score = (doc.get("metadata") or {}).get("score")
++    return round(score, 4) if isinstance(score, (int, float)) else score
++
++
++def run_one(svc, expansion, source):
++    docs = svc.retriever.retrieve(
++        query=expansion,
++        top_k=TOP_K,
++        domain_filter=None,
++        score_threshold=SCORE_TH,
++        source=source,
++    )
++    cands = [d["metadata"] for d in docs]
++    res = svc.verifier.verify_mappings(
++        original_text=f"The patient took {expansion}.",
++        expanded_text=f"The patient took {expansion}.",
++        mapping_standardizations=[{
++            "abbreviation": expansion,
++            "expansion": expansion,
++            "candidates": cands,
++        }],
++    )
++    mv = (res.get("mapping_validations") or [{}])[0]
++    ci = mv.get("chosen_index")
++    chosen = None
++    if (
++        isinstance(ci, int)
++        and not isinstance(ci, bool)
++        and 0 <= ci < len(cands)
++        and mv.get("standardization_faithful") is True
++    ):
++        chosen = cands[ci]
++    return {
++        "n_cands": len(cands),
++        "top1_score": _top1_score(docs[0] if docs else None),
++        "name": chosen.get("concept_name") if chosen else None,
++        "code": chosen.get("concept_code") if chosen else None,
++        "domain": chosen.get("domain_id") if chosen else None,
++    }
++
++
++def main():
++    svc = ABBRService()
++    print(f"{'drug':<20}{'source':<8}{'chosen':<28}{'code':<10}{'domain':<14}{'top1':<8}")
++    print("-" * 88)
++    for drug in DRUGS:
++        for source in ("snomed", "rxnorm"):
++            r = run_one(svc, drug, source)
++            name = r["name"] if r["name"] else "(弃码)"
++            print(
++                f"{drug:<20}{source:<8}{name:<28}"
++                f"{str(r['code']):<10}{str(r['domain']):<14}{str(r['top1_score']):<8}"
++            )
++        print()
++
++
++if __name__ == "__main__":
++    main()
+```
