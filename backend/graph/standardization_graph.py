@@ -306,7 +306,7 @@ class StandardizationGraph:
                 "std_cache": None,
                 "std_concept": None,
                 "status": "PENDING" if best else "NOT_EXPANDED",
-                "failure": None,
+                "failure": None if best else info.get("failure"),
             })
         visible = [r for r in records if r["expansion"] and r["status"] != "ABSTAIN"]
         expanded = svc._build_expanded_text_deterministic(text, visible)
@@ -332,10 +332,10 @@ class StandardizationGraph:
         visible = [r for r in records if r["expansion"] and r["status"] != "ABSTAIN"]
         expanded = svc._build_expanded_text_deterministic(text, visible)
         resolved = [r for r in records if r["status"] in ("CODED", "WITHHELD")]
-        expanded_records = [r for r in records if r["expansion"]]
-        success = len(expanded_records) > 0 and all(
-            r["status"] in ("CODED", "WITHHELD") for r in expanded_records
-        )
+        success_breakdown = svc._build_success_breakdown(records)
+        expansion_success = success_breakdown["expansion_success"]
+        standardization_success = success_breakdown["standardization_success"]
+        success = expansion_success and standardization_success
         final_result = {
             "expanded_text": expanded,
             "mappings": [
@@ -360,16 +360,22 @@ class StandardizationGraph:
                 {
                     "abbreviation": r["abbreviation"],
                     "expansion": r["expansion"],
+                    "source": r["source"],
                     "status": r["status"],
+                    "coverage": r["coverage"],
                     "failure": r["failure"],
                 }
                 for r in records
             ],
+            "success_breakdown": success_breakdown,
         }
         return {
             "original_text": text,
             "final_expanded_text": expanded,
             "success": success,
+            "expansion_success": expansion_success,
+            "standardization_success": standardization_success,
+            "success_breakdown": success_breakdown,
             "final_result": final_result,
         }
 

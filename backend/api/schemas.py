@@ -14,6 +14,9 @@ class ExpandResponse(BaseModel):
     缩写扩写响应
     """
     success:bool
+    expansion_success: bool = False
+    standardization_success: bool = False
+    success_breakdown: dict | None = None
     expanded_text:str
     mappings:list[dict]
     verification:dict | None = None
@@ -25,9 +28,32 @@ class SimpleExpandResponse(BaseModel):
     """
 
     success: bool
+    expansion_success: bool = False
+    standardization_success: bool = False
+    success_breakdown: dict | None = None
     expanded_text: str
     mappings: list[dict]
     standardized_entities: list[dict] = []
+    mapping_states: list[dict] = []
+
+
+class AnalysisDiagnoseRequest(BaseModel):
+    """
+    当前单句分析结果的人话诊断请求。
+    """
+
+    text: str
+    analysis_result: dict
+
+
+class AnalysisDiagnoseResponse(BaseModel):
+    """
+    当前单句分析结果的人话诊断响应。
+    """
+
+    summary: str = ""
+    record_notes: list[dict] = []
+    next_steps: list[str] = []
 
 
 class BenchmarkSummaryResponse(BaseModel):

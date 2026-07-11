@@ -25,6 +25,8 @@
 2. 接入 UMLS、MeDAL 或 Medical Abbreviation Meta-Inventory
 3. 为每个候选扩写增加来源、频率、科室领域等元数据
 """
+import ast
+from pathlib import Path
 
 # 规则说明：
 # 所有缩写 key 统一使用大写。
@@ -199,4 +201,40 @@ ABBR_CANDIDATES = {
     "NTG": [
         {"expansion": "nitroglycerin", "domain": "Drug"},
     ],
+ 
 }
+
+
+
+
+
+
+
+
+
+
+_ABBR_CANDIDATES_PATH = Path(__file__)
+_ABBR_CANDIDATES_MTIME = _ABBR_CANDIDATES_PATH.stat().st_mtime
+
+
+def reload_abbr_candidates_if_changed(force: bool = False) -> bool:
+    """Reload ABBR_CANDIDATES after manual edits during development."""
+    global _ABBR_CANDIDATES_MTIME
+
+    current_mtime = _ABBR_CANDIDATES_PATH.stat().st_mtime
+    if not force and current_mtime == _ABBR_CANDIDATES_MTIME:
+        return False
+
+    text = _ABBR_CANDIDATES_PATH.read_text(encoding="utf-8")
+    marker = "ABBR_CANDIDATES ="
+    marker_index = text.index(marker)
+    tree = ast.parse(text[marker_index:])
+    assignment = tree.body[0]
+    if not isinstance(assignment, ast.Assign):
+        raise ValueError("ABBR_CANDIDATES assignment not found.")
+
+    refreshed = ast.literal_eval(assignment.value)
+    ABBR_CANDIDATES.clear()
+    ABBR_CANDIDATES.update(refreshed)
+    _ABBR_CANDIDATES_MTIME = current_mtime
+    return True

@@ -1,9 +1,10 @@
-from data.abbr_candidates import ABBR_CANDIDATES
+from data.abbr_candidates import ABBR_CANDIDATES, reload_abbr_candidates_if_changed
 
 class ABBRCandidateRetriever:
     #医学缩写候选召回器
     #作用:输入一个医学缩写，返回它可能对应的多个完整医学术语
     def retrieve(self, abbreviation: str):
+        reload_abbr_candidates_if_changed()
         abbr = abbreviation.upper().strip()
         candidates = ABBR_CANDIDATES.get(abbr, [])
         return [

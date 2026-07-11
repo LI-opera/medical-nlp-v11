@@ -1,28 +1,14 @@
-from langchain_deepseek import ChatDeepSeek
-from services.medical_standardizer import MedicalStandardizer
 from services.abbr_verifier import ABBVerifier
 from services.medical_retriever import MedicalRetriever
+from services.medical_ner import MedicalNER
 from services.abbr_candidate_retriever import ABBRCandidateRetriever
 from services.abbr_candidate_coverage_evaluator import ABBRCandidateCoverageEvaluator
 from services.abbr_candidate_fallback_retriever import ABBRCandidateFallbackRetriever
-from data.abbr_candidates import ABBR_CANDIDATES
+from data.abbr_candidates import ABBR_CANDIDATES, reload_abbr_candidates_if_changed
 import re
 #加载环境变量
 import os
 from dotenv import load_dotenv
-
-# NER 实体标签 → SNOMED domain_id(库里实际取值:Condition/Observation/Measurement/
-# Procedure/Drug/Spec Anatomic Site/Device 等)。映射不完美没关系——domain_boost 是软加分。
-NER_LABEL_TO_DOMAIN = {
-    "DISEASE_DISORDER": "Condition",
-    "SIGN_SYMPTOM": "Condition",
-    "BIOLOGICAL_STRUCTURE": "Spec Anatomic Site",
-    "MEDICATION": "Drug",
-    "DIAGNOSTIC_PROCEDURE": "Procedure",
-    "THERAPEUTIC_PROCEDURE": "Procedure",
-    "LAB_VALUE": "Measurement",
-    "DETAILED_DESCRIPTION": "Observation",
-}
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(CURRENT_DIR)
@@ -41,29 +27,8 @@ class ABBRService:
         作用:将病例中医学缩写替换为完整术语。
     """
     def __init__(self):
-        #拿到DEEPSEEK_API_KEY
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise ValueError("DEEPSEEK_API_KEY is not set. Please check backend/.env")
-        #初始化创建一个字典里面  缩写：完整字段名称
-        self.abbr_dict = {
-            "SOB":"shortness of breath",
-            "HTN":"hypertension",
-            "DM":"diabetes mellitus",
-            "CP":"chest pain",
-            "CAD":"coronary artery disease",
-            "CHF":"congestive heart failure"
-        }
-        self.llm = ChatDeepSeek(
-            model="deepseek-chat",
-            api_key = api_key.strip(),
-            temperature = 0,
-            max_retries = 2
-        )
-        
         # 这些对象内部可能会加载模型，所以放到 __init__ 里复用
-        self.standardizer = MedicalStandardizer()
-        self.ner_service = self.standardizer.ner_service
+        self.ner_service = MedicalNER()
         self.retriever = MedicalRetriever()
         self.verifier = ABBVerifier()
         self.candidate_retriever = ABBRCandidateRetriever()
@@ -97,6 +62,113 @@ class ABBRService:
     @staticmethod
     def _route_source(domain):
         return "rxnorm" if domain == "Drug" else "snomed"
+
+    @staticmethod
+    def _build_success_breakdown(records):
+        """Business success is scoped to abbreviation records, not all entities."""
+        target_records = records
+        target_count = len(target_records)
+        expanded_count = sum(1 for r in target_records if r.get("expansion"))
+        coded_count = sum(1 for r in target_records if r.get("status") == "CODED")
+        withheld_count = sum(1 for r in target_records if r.get("status") == "WITHHELD")
+        not_expanded_count = sum(1 for r in target_records if r.get("status") == "NOT_EXPANDED")
+        abstain_count = sum(1 for r in target_records if r.get("status") == "ABSTAIN")
+        pending_count = sum(1 for r in target_records if r.get("status") == "PENDING")
+
+        expansion_success = (
+            target_count > 0
+            and all(bool(r.get("expansion")) for r in target_records)
+        )
+        standardization_success = (
+            target_count > 0
+            and all(r.get("status") == "CODED" for r in target_records)
+        )
+
+        return {
+            "expansion_success": expansion_success,
+            "standardization_success": standardization_success,
+            "target_count": target_count,
+            "expanded_count": expanded_count,
+            "coded_count": coded_count,
+            "withheld_count": withheld_count,
+            "not_expanded_count": not_expanded_count,
+            "abstain_count": abstain_count,
+            "pending_count": pending_count,
+        }
+
+    @staticmethod
+    def _build_not_expanded_failure(abbr, candidates, coverage, candidate_source, retrieval_trace=None):
+        retrieval_trace = retrieval_trace or {}
+        plausible = coverage.get("plausible_candidates") or []
+        issues = coverage.get("issues") or []
+        confidence = coverage.get("confidence") or 0.0
+        candidate_expansions = [c.get("expansion") for c in candidates or []]
+
+        evidence = {
+            "candidate_source": candidate_source,
+            "candidate_count": len(candidates or []),
+            "candidates_seen": candidate_expansions,
+            "plausible_candidates": plausible,
+            "coverage_confidence": confidence,
+            "coverage_ok": coverage.get("coverage_ok"),
+            "coverage_issues": issues,
+            "primary_called": retrieval_trace.get("primary_called"),
+            "primary_candidate_count": retrieval_trace.get("primary_candidate_count"),
+            "fallback_called": retrieval_trace.get("fallback_called"),
+            "fallback_candidate_count": retrieval_trace.get("fallback_candidate_count"),
+            "fallback_reason": retrieval_trace.get("fallback_reason"),
+            "fallback_error_kind": retrieval_trace.get("fallback_error_kind"),
+            "fallback_raw_output": retrieval_trace.get("fallback_raw_output"),
+            "fallback_error": retrieval_trace.get("fallback_error"),
+        }
+
+        if not candidates:
+            fallback_failed = bool(
+                evidence.get("fallback_error_kind")
+                or evidence.get("fallback_raw_output")
+                or evidence.get("fallback_error")
+            )
+            subtype = "FALLBACK_FAILED" if fallback_failed else "FALLBACK_RETURNED_EMPTY"
+            reason = (
+                "Fallback retriever failed before returning usable candidates."
+                if fallback_failed
+                else "No expansion candidates were returned by primary or fallback retriever."
+            )
+            suggestion = (
+                "Check fallback API, JSON format, or runtime configuration."
+                if fallback_failed
+                else "Need more clinical context or abbreviation dictionary/source update."
+            )
+            return {
+                "type": "NO_CANDIDATES",
+                "subtype": subtype,
+                "stage": "candidate_retrieval",
+                "reason": reason,
+                "suggestion": suggestion,
+                "evidence": evidence,
+            }
+
+        ambiguous = len(plausible) > 1 or (
+            len(candidate_expansions) > 1
+            and bool(plausible)
+            and confidence < 0.8
+        )
+        if ambiguous:
+            return {
+                "type": "AMBIGUOUS_LOW_CONTEXT",
+                "stage": "candidate_coverage",
+                "reason": "Multiple candidate expansions remain plausible, but context is insufficient to choose safely.",
+                "suggestion": "Return abstain/not expanded and request more clinical context instead of retrying fallback.",
+                "evidence": evidence,
+            }
+
+        return {
+            "type": "CANDIDATES_REJECTED_BY_COVERAGE",
+            "stage": "candidate_coverage",
+            "reason": coverage.get("reason") or "Candidates exist, but coverage evaluation did not support a safe expansion.",
+            "suggestion": "Review candidate source quality or add stronger context evidence before expanding.",
+            "evidence": evidence,
+        }
 
     @staticmethod
     def _std_rank(s):
@@ -189,13 +261,12 @@ class ABBRService:
         """Expand abbreviations, standardize, and verify with a unified data flow.
         Each abbreviation uses one record from retrieval through final output, with
         explicit lifecycle status (NOT_EXPANDED/PENDING/CODED/WITHHELD/ABSTAIN)
-        and failure details. The external response shape stays unchanged.
+        and failure details. Existing response fields are preserved while strict
+        success details are added.
         """
         attempts = []
         candidate_infos = self._get_abbreviation_candidates(text)
         current_abbreviation_candidates = candidate_infos
-        mapping_support_results = []
-        standardization_result = None
 
         # Unified per-abbreviation record: one shape from retrieval to output.
         records = []
@@ -216,13 +287,16 @@ class ABBRService:
             }
             if rec["status"] == "NOT_EXPANDED":
                 cov = rec["coverage"]
-                rec["failure"] = {
+                rec["failure"] = info.get("failure") or {
                     "type": "ABBR_NOT_EXPANDED",
                     "stage": "coverage",
                     "reason": "coverage withheld expansion (not confident enough)",
+                    "suggestion": "Need more clinical context or candidate source update.",
                     "evidence": {
+                        "candidate_source": rec.get("source"),
                         "coverage_confidence": cov.get("confidence"),
                         "coverage_ok": cov.get("coverage_ok"),
+                        "coverage_issues": cov.get("issues"),
                         "candidates_seen": [c.get("expansion") for c in rec["candidates"]],
                     },
                 }
@@ -239,6 +313,7 @@ class ABBRService:
 
         # Early stop: no abbreviation produced an expansion (coverage_failed).
         if not _expanded(records):
+            success_breakdown = self._build_success_breakdown(records)
             attempt_result = {
                 "attempt": 1,
                 "expanded_text": current_expanded_text,
@@ -257,23 +332,24 @@ class ABBRService:
                     "overall_valid": False
                 },
                 "stop_reason": "coverage_failed_no_valid_expansion",
-                "mapping_support_results": mapping_support_results,
                 "mapping_states": [
                     {"abbreviation": r["abbreviation"], "expansion": r["expansion"],
-                     "status": r["status"], "failure": r["failure"]}
+                     "source": r["source"], "status": r["status"],
+                     "domain": r.get("domain"),
+                     "chosen_concept": r.get("std_concept"),
+                     "coverage": r["coverage"], "failure": r["failure"]}
                     for r in records
                 ],
+                "success_breakdown": success_breakdown,
             }
             attempts.append(attempt_result)
-            try:
-                from services.error_collector import collect_unresolved
-                collect_unresolved(text, records)
-            except Exception:
-                pass
             return {
                 "original_text": text,
                 "final_expanded_text": current_expanded_text,
                 "success": False,
+                "expansion_success": success_breakdown["expansion_success"],
+                "standardization_success": success_breakdown["standardization_success"],
+                "success_breakdown": success_breakdown,
                 "attempts": attempts,
                 "final_result": attempt_result,
                 "reason": "No valid abbreviation expansion found. Candidate coverage failed.",
@@ -369,10 +445,8 @@ class ABBRService:
                      "label": r["label"], "source": r["source"], "status": r["status"]}
                     for r in records
                 ],
-                "standardization": standardization_result,
                 "mapping_standardizations": mapping_standardizations,
                 "verification": verification,
-                "mapping_support_results": mapping_support_results,
             })
 
         # Loop end: any still-PENDING record abstains safely.
@@ -389,43 +463,43 @@ class ABBRService:
         resolved = [r for r in records if r["status"] in ("CODED", "WITHHELD")]
         final_mappings = [
             {"abbreviation": r["abbreviation"], "expansion": r["expansion"],
-             "label": r["label"], "source": r["source"]}
+             "label": r["label"], "source": r["source"], "status": r["status"]}
             for r in resolved
         ]
-        success = len(_expanded(records)) > 0 and all(
-            r["status"] in ("CODED", "WITHHELD") for r in _expanded(records)
-        )
+        success_breakdown = self._build_success_breakdown(records)
+        expansion_success = success_breakdown["expansion_success"]
+        standardization_success = success_breakdown["standardization_success"]
+        success = expansion_success and standardization_success
 
         final_result = {
             "attempt": len(attempts),
             "expanded_text": current_expanded_text,
             "abbreviation_candidates": current_abbreviation_candidates,
             "mappings": final_mappings,
-            "standardization": standardization_result,
             "mapping_standardizations": [
                 {"abbreviation": r["abbreviation"], "expansion": r["expansion"],
                  "candidates": r["std_cache"], "chosen_concept": r["std_concept"]}
                 for r in resolved
             ],
             "verification": attempts[-1]["verification"] if attempts else None,
-            "mapping_support_results": mapping_support_results,
             "mapping_states": [
                 {"abbreviation": r["abbreviation"], "expansion": r["expansion"],
-                 "status": r["status"], "failure": r["failure"]}
+                 "source": r["source"], "status": r["status"],
+                 "domain": r.get("domain"),
+                 "chosen_concept": r.get("std_concept"),
+                 "coverage": r["coverage"], "failure": r["failure"]}
                 for r in records
             ],
+            "success_breakdown": success_breakdown,
         }
-
-        try:
-            from services.error_collector import collect_unresolved
-            collect_unresolved(text, records)
-        except Exception:
-            pass
 
         return {
             "original_text": text,
             "final_expanded_text": current_expanded_text,
             "success": success,
+            "expansion_success": expansion_success,
+            "standardization_success": standardization_success,
+            "success_breakdown": success_breakdown,
             "attempts": attempts,
             "final_result": final_result,
         }
@@ -443,6 +517,7 @@ class ABBRService:
         5. 根据 plausible_candidates 得到 filtered_candidates
         """
 
+        reload_abbr_candidates_if_changed()
         #取出当前候选库中已有的缩写，比如{"SOB", "DM", "HTN", "CP"}
         known_abbrs = set(ABBR_CANDIDATES.keys())
 
@@ -461,6 +536,16 @@ class ABBRService:
 
             #第一层：主候选库召回
             candidates = self.candidate_retriever.retrieve(abbr)
+            retrieval_trace = {
+                "primary_called": True,
+                "primary_candidate_count": len(candidates or []),
+                "fallback_called": False,
+                "fallback_candidate_count": None,
+                "fallback_reason": None,
+                "fallback_error_kind": None,
+                "fallback_raw_output": None,
+                "fallback_error": None,
+            }
             candidate_source = "primary"
 
             #第二层：如果主候选库没有结果，走fallback retriever
@@ -470,31 +555,48 @@ class ABBRService:
                     context_text=text
                 )
                 candidates = fallback_result.get("candidates",[])
+                retrieval_trace.update({
+                    "fallback_called": True,
+                    "fallback_candidate_count": len(candidates or []),
+                    "fallback_reason": fallback_result.get("reason"),
+                    "fallback_error_kind": fallback_result.get("error_kind"),
+                    "fallback_raw_output": fallback_result.get("raw_output"),
+                    "fallback_error": fallback_result.get("error"),
+                })
                 candidate_source = "fallback"
 
             if candidate_source == "fallback":
                 for candidate in candidates:
-                    _, label, _ = self.ner_service.is_medical(candidate.get("expansion"))
-                    candidate["domain"] = NER_LABEL_TO_DOMAIN.get(label)
+                    domain, _, _ = self.ner_service.infer_domain(candidate.get("expansion"))
+                    candidate["domain"] = domain
             
             #如果primary和fallback都没有候选
             if not candidates:
+                coverage = {
+                    "abbreviation": abbr,
+                    "coverage_ok": False,
+                    "confidence": 0.0,
+                    "plausible_candidates": [],
+                    "reason": "No candidates found from primary or fallback retriever.",
+                    "issues": ["no_candidates"]
+                }
                 found.append({
                     "abbreviation":abbr,
                     "candidates": [],
                     "filtered_candidates": [],
-                    "coverage": {
-                        "abbreviation": abbr,
-                        "coverage_ok": False,
-                        "confidence": 0.0,
-                        "plausible_candidates": [],
-                        "reason": "No candidates found from primary or fallback retriever.",
-                        "issues": ["no_candidates"]
-                    },
+                    "coverage": coverage,
                     "candidate_source": "none",
                     "best_expansion": None,
                     "chosen_label": None,
-                    "chosen_domain": None
+                    "chosen_domain": None,
+                    "resolution": "not_expanded",
+                    "failure": self._build_not_expanded_failure(
+                        abbr=abbr,
+                        candidates=[],
+                        coverage=coverage,
+                        candidate_source="none",
+                        retrieval_trace=retrieval_trace,
+                    )
                 })
                 continue
             
@@ -531,6 +633,17 @@ class ABBRService:
                         break
               
             #将缩写，候选表，候选覆盖情况返回
+            failure = None
+            resolution = "expanded" if best else "not_expanded"
+            if not best:
+                failure = self._build_not_expanded_failure(
+                    abbr=abbr,
+                    candidates=candidates,
+                    coverage=coverage,
+                    candidate_source=candidate_source,
+                    retrieval_trace=retrieval_trace,
+                )
+
             found.append({
                 "abbreviation":abbr,
                 "candidates":candidates,
@@ -539,7 +652,9 @@ class ABBRService:
                 "candidate_source":candidate_source,
                 "best_expansion":best,
                 "chosen_label":None,
-                "chosen_domain":best_domain
+                "chosen_domain":best_domain,
+                "resolution": resolution,
+                "failure": failure
             })
         return found
 

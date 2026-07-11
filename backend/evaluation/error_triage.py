@@ -1,286 +1,442 @@
 """
-离线 LLM 错误 Triage(三段式:LLM 提假设 → 数据自检 → LLM 据自检写执行摘要)。
+Current-run benchmark error triage.
 
-  1) 读 unresolved_cases.jsonl,默认隐藏 expected=True(gold 确定的正确弃权),只分析真信号。
-  2) 按 (failure_type, stage) 聚类;LLM(第1次)对每簇出根因假设 + checkable_claims。
-  3) ★自检层(无 LLM):拿真实数据(Milvus 概念库 / 缩写词典)核每条 checkable_claim;
-     被数据打脸的标 ⚠ 且不产草稿。
-  4) ★总结层:LLM(第2次,仅1次)拿【已被数据判过的结论】写一份给非专业读者的中文执行摘要。
-     —— 第2次 LLM 是"写作",不是"判断"(真假已由数据定),所以不是循环复判。
+Input:
+    backend/evaluation/error_analysis_report.json
 
-报告 = 顶部【执行摘要(好读)】+ 下部【逐假设自检原文(可追溯)】。
-铁律:离线、不碰主链路;LLM 只提假设/做综述;草稿只在自检未被打脸时生成;绝不自动改代码/gold。
-跑法:python backend/evaluation/error_triage.py  (需 DEEPSEEK_API_KEY + Milvus)
+Output:
+    backend/logs/triage/error_triage_report.md
+    backend/logs/triage/candidate_gold_cases.json
+
+This script follows one current-run chain only:
+benchmark_results.json -> error_analysis_report.json -> error_triage.py.
+It calls DeepSeek to turn the structured report into readable Chinese analysis.
 """
+
+from __future__ import annotations
+
 import json
 import os
 import sys
-from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
-from langchain_deepseek import ChatDeepSeek
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BACKEND_DIR))
 load_dotenv(BACKEND_DIR / ".env", override=True)
 
-LOG = BACKEND_DIR / "logs" / "unresolved_cases.jsonl"
+from services.diagnosis_explainer import explain_benchmark_payload
+
+INPUT_REPORT = BACKEND_DIR / "evaluation" / "error_analysis_report.json"
 OUT_DIR = BACKEND_DIR / "logs" / "triage"
 REPORT = OUT_DIR / "error_triage_report.md"
 CANDIDATE_GOLD = OUT_DIR / "candidate_gold_cases.json"
-MIN_CONFIDENT = 3
-LIB_EXISTS_SCORE = 0.9
-
-LEVERS = "dictionary | lib_coverage | retrieval | verify_rubric | gold_labeling | other"
 
 
-def load_records():
-    if not LOG.exists():
-        return []
-    return [json.loads(x) for x in LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
+def load_current_report(path: Path = INPUT_REPORT) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Current error analysis report not found: {path}. "
+            "Run backend/evaluation/error_analysis_report.py first."
+        )
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def cluster(records):
-    groups = defaultdict(list)
-    for r in records:
-        groups[(r.get("failure_type"), r.get("stage"))].append(r)
-    return groups
+def _compact_mapping_state(state: dict[str, Any]) -> dict[str, Any]:
+    failure = state.get("failure") or {}
+    coverage = state.get("coverage") or {}
+    evidence = failure.get("evidence") or {}
+    return {
+        "abbreviation": state.get("abbreviation"),
+        "expansion": state.get("expansion"),
+        "source": state.get("source"),
+        "status": state.get("status"),
+        "coverage_ok": coverage.get("coverage_ok"),
+        "coverage_confidence": coverage.get("confidence"),
+        "coverage_issues": coverage.get("issues") or [],
+        "failure_type": failure.get("type"),
+        "failure_subtype": failure.get("subtype"),
+        "failure_stage": failure.get("stage"),
+        "failure_reason": failure.get("reason"),
+        "suggestion": failure.get("suggestion"),
+        "evidence_candidate_source": evidence.get("candidate_source"),
+        "evidence_candidate_count": evidence.get("candidate_count"),
+        "evidence_candidates_seen": evidence.get("candidates_seen") or [],
+        "evidence_plausible_candidates": evidence.get("plausible_candidates") or [],
+        "evidence_coverage_issues": evidence.get("coverage_issues") or [],
+        "evidence_retrieved_top": evidence.get("retrieved_top") or [],
+        "primary_called": evidence.get("primary_called"),
+        "primary_candidate_count": evidence.get("primary_candidate_count"),
+        "fallback_called": evidence.get("fallback_called"),
+        "fallback_candidate_count": evidence.get("fallback_candidate_count"),
+        "fallback_reason": evidence.get("fallback_reason"),
+        "fallback_error_kind": evidence.get("fallback_error_kind"),
+        "fallback_raw_output": evidence.get("fallback_raw_output"),
+        "fallback_error": evidence.get("fallback_error"),
+    }
 
 
-def make_llm():
-    key = os.getenv("DEEPSEEK_API_KEY")
-    if not key:
-        raise ValueError("DEEPSEEK_API_KEY is not set.")
-    return ChatDeepSeek(model="deepseek-chat", api_key=key, temperature=0, max_retries=2)
+def _is_expansion_blocked_state(state: dict[str, Any]) -> bool:
+    return state.get("status") in ("NOT_EXPANDED", "ABSTAIN", "PENDING")
 
 
-def make_retriever():
-    try:
-        from services.medical_retriever import MedicalRetriever
-        return MedicalRetriever()
-    except Exception:
-        return None
+def _build_failure_detail(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "abbreviation": state.get("abbreviation"),
+        "status": state.get("status"),
+        "source": state.get("source"),
+        "failure_type": state.get("failure_type"),
+        "failure_subtype": state.get("failure_subtype"),
+        "failure_stage": state.get("failure_stage"),
+        "failure_reason": state.get("failure_reason"),
+        "suggestion": state.get("suggestion"),
+        "coverage_ok": state.get("coverage_ok"),
+        "coverage_confidence": state.get("coverage_confidence"),
+        "coverage_issues": state.get("coverage_issues") or [],
+        "evidence_candidate_source": state.get("evidence_candidate_source"),
+        "evidence_candidate_count": state.get("evidence_candidate_count"),
+        "evidence_candidates_seen": state.get("evidence_candidates_seen") or [],
+        "evidence_plausible_candidates": state.get("evidence_plausible_candidates") or [],
+        "evidence_coverage_issues": state.get("evidence_coverage_issues") or [],
+        "evidence_retrieved_top": state.get("evidence_retrieved_top") or [],
+        "primary_called": state.get("primary_called"),
+        "primary_candidate_count": state.get("primary_candidate_count"),
+        "fallback_called": state.get("fallback_called"),
+        "fallback_candidate_count": state.get("fallback_candidate_count"),
+        "fallback_reason": state.get("fallback_reason"),
+        "fallback_error_kind": state.get("fallback_error_kind"),
+        "fallback_raw_output": state.get("fallback_raw_output"),
+        "fallback_error": state.get("fallback_error"),
+    }
 
 
-def _dict_present(abbr):
-    try:
-        from data.abbr_candidates import ABBR_CANDIDATES
-        key = (abbr or "").upper()
-        if key not in ABBR_CANDIDATES:
-            return False, []
-        exps = [c.get("expansion") if isinstance(c, dict) else c for c in ABBR_CANDIDATES[key]]
-        return True, exps
-    except Exception:
-        return None, []
+def _summarize_field(states: list[dict[str, Any]], field: str) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for state in states:
+        value = state.get(field)
+        if not value:
+            continue
+        summary[value] = summary.get(value, 0) + 1
+    return summary
 
 
-def verify_claim(retriever, claim):
-    kind = claim.get("kind")
-    value = (claim.get("value") or "").strip()
-    if not value:
-        return {"kind": kind, "value": value, "exists": None, "detail": "空断言,跳过"}
-    if kind == "lib_concept":
-        if retriever is None:
-            return {"kind": kind, "value": value, "exists": None, "detail": "Milvus 不可用,无法自检"}
-        try:
-            docs = retriever.retrieve(query=value, top_k=3, domain_filter=None, score_threshold=0.0)
-        except Exception as e:
-            return {"kind": kind, "value": value, "exists": None, "detail": f"检索出错:{e}"}
-        if not docs:
-            return {"kind": kind, "value": value, "exists": False, "detail": "库里检索不到"}
-        top = docs[0]["metadata"]
-        score = float(top.get("score") or 0)
-        exists = (top["concept_name"].strip().lower() == value.lower()) or (score >= LIB_EXISTS_SCORE)
-        return {"kind": kind, "value": value, "exists": exists,
-                "detail": f"库里 top1={top['concept_name']!r} score={round(score, 3)}"}
-    if kind == "dict_abbr":
-        present, exps = _dict_present(value)
-        if present is None:
-            return {"kind": kind, "value": value, "exists": None, "detail": "词典读取失败"}
-        return {"kind": kind, "value": value, "exists": present,
-                "detail": f"词典{'有' if present else '无'}: {exps}"}
-    return {"kind": kind, "value": value, "exists": None, "detail": "未知断言类型,无法自检"}
-
-
-def _contradicts(lever, check):
-    if check.get("exists") is None:
-        return None
-    if lever == "lib_coverage" and check.get("kind") == "lib_concept":
-        return check["exists"] is True
-    if lever == "dictionary" and check.get("kind") == "dict_abbr":
-        return check["exists"] is True
-    return None
-
-
-def analyze_cluster(model, failure_type, stage, records):
-    sample = records[:20]
-    payload = [
-        {"i": i, "abbreviation": r.get("abbreviation"), "expansion": r.get("expansion"),
-         "source": r.get("source"), "reason": r.get("reason"), "evidence": r.get("evidence")}
-        for i, r in enumerate(sample)
+def _compact_case(case: dict[str, Any]) -> dict[str, Any]:
+    mapping_states = [
+        _compact_mapping_state(state) for state in case.get("mapping_states") or []
     ]
-    prompt = f"""You are a triage analyst for a medical-abbreviation NLP pipeline.
+    expansion_blocked_details = [
+        _build_failure_detail(state)
+        for state in mapping_states
+        if _is_expansion_blocked_state(state)
+    ]
+    standardization_failure_details = [
+        _build_failure_detail(state)
+        for state in mapping_states
+        if state.get("status") == "WITHHELD"
+    ]
 
-CLUSTER: failure_type={failure_type}, stage={stage}
-Levers: {LEVERS}
-- dictionary: abbr/expansion dictionary missing an entry/sense
-- lib_coverage: the SNOMED concept library lacks a faithful concept
-- retrieval: retrieval/rerank/window buried/missed a concept that exists
-- verify_rubric: the verify selection/abstain rule chose wrong or over-withheld
-- gold_labeling: the benchmark gold label itself looks wrong or too strict
-- other
-
-Records (index i):
-{json.dumps(payload, ensure_ascii=False, indent=2)}
-
-Identify 1-3 PATTERNS. For each return:
-- root_cause, lever, supporting_records (i list), confidence (high|medium|low; low if <3)
-- how_to_verify, fix_sketch
-- checkable_claims: machine-checkable assertions your hypothesis depends on:
-    {{"kind":"lib_concept","value":"<exact concept name claimed MISSING from SNOMED lib>"}}
-    or {{"kind":"dict_abbr","value":"<abbreviation claimed MISSING from dictionary>"}}  (may be [])
-- gold_case_drafts (may be []):
-    stage "expansion": {{"target":"main","text":"...","expected_mappings":[{{"abbreviation":"..","expansion":".."}}]}}
-    stage "standardization": {{"target":"concept","label":"..","expansion":"..","prefer":"..","accept":[".."]}}
-
-LANGUAGE: root_cause/how_to_verify/fix_sketch in SIMPLIFIED CHINESE. lever/confidence/kind English. JSON keys English.
-No facts beyond records. Return raw JSON only: {{"patterns":[ ... ]}}"""
-    try:
-        resp = model.invoke(prompt)
-        content = resp.content.strip().replace("```json", "").replace("```", "").strip()
-        pats = json.loads(content).get("patterns", [])
-        return pats if isinstance(pats, list) else []
-    except Exception as exc:
-        return [{"root_cause": f"LLM 调用或解析失败: {exc}", "lever": "other", "supporting_records": [],
-                 "confidence": "low", "how_to_verify": "", "fix_sketch": "",
-                 "checkable_claims": [], "gold_case_drafts": []}]
-
-
-def summarize(model, items):
-    """第2次 LLM:据【已被数据判过的】结论写非专业读者可读的中文执行摘要。"""
-    if not items:
-        return "_(无可总结条目)_"
-    prompt = f"""你是错误分析报告的总结员。下面是若干根因假设,每条的 status 已由【真实数据自检】判定(不是你判的):
-- status=数据支持 / 无法验证 → 可能值得跟进
-- status=数据矛盾 → 已被数据打脸,是假信号,必须当作【排除】,不得列为待办
-
-给【非专业读者】写一份简短中文执行摘要(markdown 正文,别用代码块包裹),结构:
-1. 开头一句话总览:共分析几条、其中值得跟进几条、排除几条假信号。
-2. 「✅ 值得跟进」:把 status 非"数据矛盾"且像真问题的,每条用大白话写「问题是什么 + 建议下一步」,末尾注明「(需人工 + benchmark 裁决)」。
-3. 「⚠ 已排除的假信号」:status=数据矛盾的,一句话说为什么不用管(数据显示其实已存在/不缺)。
-4. 「◻ 需人工核」(若有):status=无法验证的,一句话点明要人去查什么。
-要求:不夸大、不编造,只基于给定条目;被数据矛盾的明确写「排除」;优先日常话,少堆术语,短。
-
-条目(JSON):
-{json.dumps(items, ensure_ascii=False, indent=2)}"""
-    try:
-        resp = model.invoke(prompt)
-        return resp.content.strip().replace("```markdown", "").replace("```", "").strip()
-    except Exception as exc:
-        return f"_(执行摘要生成失败:{exc};请看下方详细附录)_"
+    return {
+        "id": case.get("id"),
+        "category": case.get("category"),
+        "text": case.get("text"),
+        "labels": case.get("labels") or {},
+        "failure_reasons": case.get("failure_reasons") or [],
+        "failure_type_summary": _summarize_field(mapping_states, "failure_type"),
+        "failure_subtype_summary": _summarize_field(mapping_states, "failure_subtype"),
+        "expansion_blocked_details": expansion_blocked_details,
+        "standardization_failure_details": standardization_failure_details,
+        "expected_mappings": case.get("expected_mappings") or [],
+        "predicted_mappings": case.get("predicted_mappings") or [],
+        "mapping_delta": case.get("mapping_delta") or {},
+        "benchmark_correct": case.get("benchmark_correct"),
+        "mapping_correct": case.get("mapping_correct"),
+        "system_success": case.get("system_success"),
+        "expansion_success": case.get("expansion_success"),
+        "standardization_success": case.get("standardization_success"),
+        "error_type": case.get("error_type"),
+        "taxonomy": case.get("taxonomy") or {},
+        "final_expanded_text": case.get("final_expanded_text"),
+        "mapping_states": mapping_states,
+    }
 
 
-def _md(v):
-    if v is None:
-        return ""
-    if isinstance(v, (dict, list)):
-        return json.dumps(v, ensure_ascii=False)
-    return str(v)
+def _cases_with_label(cases: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
+    return [case for case in cases if (case.get("labels") or {}).get(label)]
 
 
-def main():
-    records = load_records()
-    if not records:
-        print(f"未找到错误日志或为空: {LOG};先跑 `python backend/evaluation/run_benchmark.py`。")
-        return
-    raw_n = len(records)
-    records = [r for r in records if r.get("expected") is not True]
-    hidden = raw_n - len(records)
+def build_payload(report: dict[str, Any]) -> dict[str, Any]:
+    overall = report.get("overall_failure_analysis") or {}
+    failure_cases = overall.get("failure_cases") or []
 
-    groups = cluster(records)
-    model = make_llm()
-    retriever = make_retriever()
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    compact_failure_cases = [_compact_case(case) for case in failure_cases]
+    benchmark_cases = _cases_with_label(compact_failure_cases, "benchmark_mismatch")
+    expansion_cases = _cases_with_label(compact_failure_cases, "expansion_blocked")
+    standardization_cases = _cases_with_label(
+        compact_failure_cases, "standardization_failure"
+    )
 
-    detail_lines = []     # 详细附录
-    summary_items = []    # 喂给总结层
-    all_drafts = []
+    return {
+        "input_file": str(INPUT_REPORT),
+        "scope": "current benchmark run only",
+        "benchmark_summary": report.get("benchmark_summary") or {},
+        "overall_failure_analysis": {
+            "total_cases": overall.get("total_cases"),
+            "overall_success_count": overall.get("overall_success_count"),
+            "overall_failure_count": overall.get("overall_failure_count"),
+            "overall_success_rate": overall.get("overall_success_rate"),
+            "success_definition": overall.get("success_definition") or {},
+            "failure_definition": overall.get("failure_definition"),
+            "failure_label_summary": overall.get("failure_label_summary") or {},
+            "failure_set_relationship": overall.get("failure_set_relationship") or {},
+            "failure_category_summary": overall.get("failure_category_summary") or {},
+        },
+        "diagnostic_summary": report.get("diagnostic_summary") or {},
+        "failed_summary": report.get("failed_summary") or {},
+        "failure_cases": compact_failure_cases,
+        "benchmark_mismatch_cases": benchmark_cases,
+        "expansion_blocked_cases": expansion_cases,
+        "standardization_failure_cases": standardization_cases,
+    }
 
-    for (failure_type, stage), recs in sorted(groups.items(), key=lambda kv: (-len(kv[1]), str(kv[0]))):
-        detail_lines.append("")
-        detail_lines.append(f"## 簇:{failure_type} / {stage}({len(recs)} 条)")
-        if len(recs) < MIN_CONFIDENT:
-            detail_lines.append(f"> ⚠ 样本少(<{MIN_CONFIDENT}),低置信。")
 
-        for idx, p in enumerate(analyze_cluster(model, failure_type, stage, recs), start=1):
-            supporting = p.get("supporting_records") or []
-            if len(supporting) < MIN_CONFIDENT:
-                p["confidence"] = "low"
-            lever = p.get("lever")
-            checks = [verify_claim(retriever, c) for c in (p.get("checkable_claims") or [])]
-            contradicted = any(_contradicts(lever, c) is True for c in checks)
-            verifiable = [c for c in checks if c.get("exists") is not None]
-            status = "数据矛盾" if contradicted else ("数据支持" if verifiable else "无法验证")
-            icon = {"数据矛盾": "⚠", "数据支持": "✅", "无法验证": "◻"}[status]
+def llm_triage(payload: dict[str, Any]) -> dict[str, Any]:
+    return explain_benchmark_payload(payload)
 
-            detail_lines.append("")
-            detail_lines.append(f"### 模式 {idx} —— {icon} {status}")
-            detail_lines.append(f"- 根因假设:{_md(p.get('root_cause'))}")
-            detail_lines.append(f"- 杠杆(改哪):`{_md(lever)}`  |  置信:`{_md(p.get('confidence'))}`")
-            detail_lines.append(f"- 支撑记录(簇内 index):`{_md(supporting)}`")
-            if checks:
-                detail_lines.append("- 数据自检:")
-                for c in checks:
-                    mark = "  ← ⚠ 与假设矛盾" if _contradicts(lever, c) is True else ""
-                    detail_lines.append(f"    - [{c.get('kind')}] {c.get('value')!r}: {c.get('detail')}{mark}")
-            detail_lines.append(f"- 如何验证(人工):{_md(p.get('how_to_verify'))}")
-            detail_lines.append(f"- 修复方向(仅假设,先证后建):{_md(p.get('fix_sketch'))}")
 
-            drafts = p.get("gold_case_drafts") or []
-            if drafts and not contradicted:
-                detail_lines.append(f"- 候选 gold 用例草稿:{len(drafts)} 条(自检未被打脸)")
-                all_drafts.extend(drafts)
-            elif drafts and contradicted:
-                detail_lines.append("- 候选 gold 用例草稿:已抑制(假设被数据打脸)")
+def _fmt_dict(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2)
 
-            summary_items.append({
-                "cluster": f"{failure_type}/{stage}",
-                "status": status,
-                "root_cause": p.get("root_cause"),
-                "lever": lever,
-                "confidence": p.get("confidence"),
-                "support_count": len(supporting),
-                "checks": [f"{c.get('value')}: {c.get('detail')}"
-                           + ("(与假设矛盾)" if _contradicts(lever, c) is True else "")
-                           for c in checks],
-                "has_draft": bool(drafts and not contradicted),
-            })
 
-    summary_md = summarize(model, summary_items)
+def _pct(rate: Any) -> str:
+    if not isinstance(rate, (int, float)):
+        return "N/A"
+    return f"{rate:.2%}"
 
-    head = [
+
+def _render_case(case: dict[str, Any]) -> list[str]:
+    labels = case.get("labels") or {}
+    active_labels = [name for name, enabled in labels.items() if enabled]
+    return [
+        f"### {case.get('id')} ({case.get('category')})",
+        "",
+        f"- Text: {case.get('text')}",
+        f"- Labels: `{', '.join(active_labels)}`",
+        f"- Failure reasons: `{_fmt_dict(case.get('failure_reasons') or [])}`",
+        f"- Benchmark correct: {case.get('benchmark_correct')}",
+        f"- Expansion success: {case.get('expansion_success')}",
+        f"- Standardization success: {case.get('standardization_success')}",
+        f"- Failure type summary: `{_fmt_dict(case.get('failure_type_summary') or {})}`",
+        f"- Failure subtype summary: `{_fmt_dict(case.get('failure_subtype_summary') or {})}`",
+        f"- Expansion blocked details: `{_fmt_dict(case.get('expansion_blocked_details') or [])}`",
+        f"- Standardization failure details: `{_fmt_dict(case.get('standardization_failure_details') or [])}`",
+        f"- Mapping delta: `{_fmt_dict(case.get('mapping_delta') or {})}`",
+        f"- Mapping states: `{_fmt_dict(case.get('mapping_states') or [])}`",
+        "",
+    ]
+
+
+def _render_cases(title: str, cases: list[dict[str, Any]]) -> list[str]:
+    lines = [title, ""]
+    if not cases:
+        lines.extend(["- 本路径没有失败样例。", ""])
+        return lines
+
+    for case in cases:
+        lines.extend(_render_case(case))
+    return lines
+
+
+def _render_notes(title: str, notes: list[dict[str, Any]]) -> list[str]:
+    lines = [title, ""]
+    if not notes:
+        lines.extend(["- LLM 未生成该路径的人话解释。", ""])
+        return lines
+
+    for note in notes:
+        labels = note.get("labels")
+        lines.extend(
+            [
+                f"### {note.get('id')}",
+                "",
+                f"- 失败标签: `{_fmt_dict(labels)}`" if labels else "- 失败标签: `未提供`",
+                f"- 发生了什么: {note.get('what_happened')}",
+                f"- 可能原因: {note.get('likely_cause')}",
+                f"- 下一步建议: {note.get('next_step')}",
+                "",
+            ]
+        )
+    return lines
+
+
+def render_markdown(payload: dict[str, Any], triage: dict[str, Any]) -> str:
+    benchmark = payload.get("benchmark_summary") or {}
+    overall = payload.get("overall_failure_analysis") or {}
+    relationship = overall.get("failure_set_relationship") or {}
+    label_summary = overall.get("failure_label_summary") or {}
+    diagnostics = payload.get("diagnostic_summary") or {}
+    failed_summary = payload.get("failed_summary") or {}
+
+    failure_cases = payload.get("failure_cases") or []
+    benchmark_cases = payload.get("benchmark_mismatch_cases") or []
+    expansion_cases = payload.get("expansion_blocked_cases") or []
+    standardization_cases = payload.get("standardization_failure_cases") or []
+
+    total_cases = overall.get("total_cases")
+    success_count = overall.get("overall_success_count")
+    failure_count = overall.get("overall_failure_count")
+    success_rate = overall.get("overall_success_rate")
+
+    lines = [
         "# 错误 Triage 报告",
         "",
-        f"> 全量 {raw_n} 条;隐藏 {hidden} 条【预期内】(gold 确定的正确弃权,非真错);分析 {len(records)} 条、{len(groups)} 个簇。",
-        f"> 自检层:Milvus {'可用' if retriever else '不可用(概念库自检降级)'}。",
-        "> 流程:LLM 提假设 → 真实数据自检 → LLM 据自检写摘要。全部是线索,不自动改代码/gold。",
+        f"> 输入文件: `{INPUT_REPORT}`",
+        "> 范围: 只分析当前这一轮 benchmark 生成的 error_analysis_report.json",
+        f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "> 生成方式: DeepSeek 根据结构化错误报告生成中文解释",
         "",
-        "## 执行摘要(给人看;基于数据自检结论)",
+        "## 1. 总体结论",
         "",
-        summary_md,
+        str(triage.get("executive_summary") or "").strip(),
         "",
-        "---",
+        f"- 总样例数(total_cases): {total_cases}",
+        f"- 总成功数(overall_success): {success_count}",
+        f"- 总失败数(overall_failure): {failure_count}",
+        f"- 总成功率(overall_success_rate): {_pct(success_rate)}",
         "",
-        "## 详细附录(逐假设 + 自检原文,可追溯)",
+        "## 2. 口径说明",
+        "",
+        "| 指标 | 含义 | 本轮数值 |",
+        "| --- | --- | --- |",
+        (
+            "| overall_success | 同时满足 benchmark_correct、expansion_success、"
+            f"standardization_success 的 case 数 | {success_count} |"
+        ),
+        (
+            "| overall_failure | benchmark_mismatch、expansion_blocked、"
+            f"standardization_failure 任一成立的 case 数 | {failure_count} |"
+        ),
+        (
+            "| benchmark_accuracy | predicted_mappings 与 gold expected_mappings 的对齐准确率 | "
+            f"{benchmark.get('correct')}/{benchmark.get('total_cases')} = "
+            f"{_pct(benchmark.get('accuracy'))} |"
+        ),
+        (
+            "| expansion_success | 目标缩写 record 是否完成扩写的 case 级统计 | "
+            f"{benchmark.get('expansion_success_count')} |"
+        ),
+        (
+            "| standardization_success | 目标 record 是否全部 CODED 的 case 级统计 | "
+            f"{benchmark.get('standardization_success_count')} |"
+        ),
+        "| record_status_summary | record 级状态计数，不是 case 数 | 见第 8 节 |",
+        "",
+        "## 3. 总失败集合关系",
+        "",
+        "```text",
+        "overall_failure_cases = benchmark_mismatch ∪ expansion_blocked ∪ standardization_failure",
+        "```",
+        "",
+        f"- benchmark_mismatch: {label_summary.get('benchmark_mismatch')}",
+        f"- expansion_blocked: {label_summary.get('expansion_blocked')}",
+        f"- standardization_failure: {label_summary.get('standardization_failure')}",
+        f"- overall_failure: {failure_count}",
+        "",
+        "> 注意: 上面三个失败标签可以重叠，所以不能直接相加。",
+        "",
+        f"- 只有 benchmark_mismatch 的 case 数: {relationship.get('benchmark_mismatch_only_count')}",
+        (
+            "- 同时 benchmark_mismatch + standardization_failure 的 case 数: "
+            f"{relationship.get('benchmark_mismatch_and_standardization_failure_count')}"
+        ),
+        (
+            "- 同时 benchmark_mismatch + expansion_blocked 的 case 数: "
+            f"{relationship.get('benchmark_mismatch_and_expansion_blocked_count')}"
+        ),
+        (
+            "- expansion_blocked 是否全部包含在 standardization_failure 中: "
+            f"{relationship.get('expansion_blocked_is_subset_of_standardization_failure')}"
+        ),
+        "",
+        "## 4. 关键发现",
+        "",
     ]
-    REPORT.write_text("\n".join(head + detail_lines) + "\n", encoding="utf-8")
-    CANDIDATE_GOLD.write_text(json.dumps(all_drafts, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    print("已写出 triage 产物:")
-    print(f"  报告(顶部执行摘要 + 详细附录):{REPORT}")
-    print(f"  候选 gold 草稿:{CANDIDATE_GOLD}(共 {len(all_drafts)} 条;被打脸的假设不产草稿)")
-    print("提醒:LLM 提假设 → 数据自检 → LLM 写摘要;未改任何代码或 gold。")
+    for item in triage.get("key_findings") or []:
+        lines.append(f"- {item}")
+    if not triage.get("key_findings"):
+        lines.append("- LLM 未生成关键发现。")
+
+    lines.extend([""])
+    lines.extend(_render_cases("## 5. benchmark 错误分析", benchmark_cases))
+    lines.extend(_render_cases("## 6. 扩写错误分析", expansion_cases))
+    lines.extend(_render_cases("## 7. 标准化错误分析", standardization_cases))
+
+    lines.extend(
+        [
+            "## 8. record 级诊断",
+            "",
+            "下面这些字段直接来自 `error_analysis_report.json`。`record_status_summary` 是 record 数，不是 case 数。",
+            "",
+            "### 全量 record 诊断",
+            "",
+            f"```json\n{_fmt_dict(diagnostics)}\n```",
+            "",
+            "### benchmark 失败样例的 record 诊断",
+            "",
+            f"```json\n{_fmt_dict(failed_summary)}\n```",
+            "",
+        ]
+    )
+
+    lines.extend(_render_notes("## 9. 总失败样例的人话解释", triage.get("failure_case_notes") or []))
+    lines.extend(_render_notes("## 10. benchmark 错误的人话解释", triage.get("benchmark_mismatch_notes") or []))
+    lines.extend(_render_notes("## 11. 扩写错误的人话解释", triage.get("expansion_blocked_notes") or []))
+    lines.extend(_render_notes("## 12. 标准化错误的人话解释", triage.get("standardization_failure_notes") or []))
+
+    lines.extend(["## 13. 后续改进建议", ""])
+    for item in triage.get("manual_followups") or []:
+        lines.append(f"- {item}")
+    if not triage.get("manual_followups"):
+        lines.append("- LLM 未生成额外的人工跟进事项。")
+
+    lines.extend(
+        [
+            "",
+            "## 14. 使用边界",
+            "",
+            "- 本报告只分析当前 `error_analysis_report.json`，不会汇总历史错误。",
+            "- `overall_success` 是本报告主口径，`benchmark_accuracy` 只是 gold 对齐辅助指标。",
+            "- 失败标签可以重叠，标签数量不能直接相加。",
+            "- record 级状态用于定位原因，不能直接当作 case 数。",
+            "",
+            "## 15. 总失败样例 ID",
+            "",
+            f"```json\n{_fmt_dict([case.get('id') for case in failure_cases])}\n```",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def main() -> None:
+    report = load_current_report()
+    payload = build_payload(report)
+    triage = llm_triage(payload)
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    REPORT.write_text(render_markdown(payload, triage), encoding="utf-8")
+
+    candidates = triage.get("candidate_gold_case_drafts") or []
+    CANDIDATE_GOLD.write_text(
+        json.dumps(candidates, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    print(f"Triage report saved to: {REPORT}")
+    print(f"Candidate gold cases saved to: {CANDIDATE_GOLD}")
 
 
 if __name__ == "__main__":

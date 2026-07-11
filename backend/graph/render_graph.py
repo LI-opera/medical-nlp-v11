@@ -4,11 +4,8 @@
 证明 LangGraph 包装与生产状态机 expand_verify_with_retry 输出一致。
 跑法：python backend/graph/render_graph.py（需 Milvus + DeepSeek key）
 """
-import os
 import sys
 from pathlib import Path
-
-os.environ["ERROR_LOG_RUNTIME"] = "0"
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BACKEND_DIR))

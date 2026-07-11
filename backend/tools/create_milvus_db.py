@@ -1,3 +1,4 @@
+#旧的医疗数据实体库版本可以删除
 # 读取 snomed_sample.csv
 #     ↓
 # 取出 concept_name

@@ -26,5 +26,5 @@ DEEPSEEK_CONFIG = LLMConfig(
 
 QWEN_CONFIG = LLMConfig(
     provider=LLMProvider.QWEN,
-    model_name="qwen3.6-plus",
+    model_name="qwen3.6-flash",
 )

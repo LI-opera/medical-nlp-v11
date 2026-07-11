@@ -7,11 +7,8 @@ L3 Stage-5: 多源 A/B 量化
 目的：诚实回答“路由到 RxNorm 相对只用 SNOMED 到底改变了什么”。
 跑法：python backend/evaluation/run_source_ab.py（需 Milvus + DeepSeek key）
 """
-import os
 import sys
 from pathlib import Path
-
-os.environ["ERROR_LOG_RUNTIME"] = "0"
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BACKEND_DIR))

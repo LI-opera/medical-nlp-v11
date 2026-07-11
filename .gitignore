@@ -12,3 +12,8 @@ backend/data/snomed_clinical.csv
 snomed_clinical.csv
 backend/data/rxnorm_clinical.csv
 rxnorm_clinical.csv
+backend/evaluation/error_analysis_report.json
+backend/evaluation/error_taxonomy_report.json
+backend/logs/
+backend/logs/**/*.jsonl
+backend/logs/**/*.md

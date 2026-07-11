@@ -1,10 +1,7 @@
 import sys
 import json
 import time
-import os
 from pathlib import Path
-
-os.environ["ERROR_LOG_RUNTIME"] = "0"
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(BACKEND_DIR))
@@ -69,14 +66,24 @@ def compare_text_contains(final_text,expected_text_contains):
 
 
 
-def run_benchmark():
+def run_benchmark(cases=None, output_path=None, progress_callback=None):
     service = ABBRService()
-    total = len(ABBR_BENCHMARK_CASES)
+    benchmark_cases = cases or ABBR_BENCHMARK_CASES
+    total = len(benchmark_cases)
     correct = 0
     category_stats = {}
     results = []
 
-    for case in ABBR_BENCHMARK_CASES:
+    for index, case in enumerate(benchmark_cases, start=1):
+        if progress_callback:
+            progress_callback({
+                "current": index,
+                "total": total,
+                "case_id": case.get("id"),
+                "category": case.get("category"),
+                "text": case.get("text"),
+            })
+
         result = None
         for _try in range(3):
             try:
@@ -94,6 +101,19 @@ def run_benchmark():
         
         final_result = result.get("final_result",{})
         predicted_mappings = final_result.get("mappings",[])
+        mapping_states = final_result.get("mapping_states", []) or []
+        mapping_standardizations = final_result.get("mapping_standardizations", []) or []
+        success_breakdown = result.get("success_breakdown") or final_result.get("success_breakdown") or {}
+        compact_standardizations = [
+            {
+                "abbreviation": item.get("abbreviation"),
+                "expansion": item.get("expansion"),
+                "chosen_concept": item.get("chosen_concept"),
+                "candidate_count": len(item.get("candidates") or []),
+                "top_candidates": (item.get("candidates") or [])[:3],
+            }
+            for item in mapping_standardizations
+        ]
         final_expanded_text = (
             final_result.get("expanded_text","")
         )
@@ -108,35 +128,6 @@ def run_benchmark():
             expected_text_contains=case.get("expected_text_contains")
         )
         final_correct = is_correct and text_check["correct"]
-
-        try:
-            from services.error_collector import collect_unresolved
-            gold_abbrs = {
-                (m.get("abbreviation") or "").upper()
-                for m in case["expected_mappings"]
-                if m.get("abbreviation")
-            }
-            collect_unresolved(
-                text=case["text"],
-                records=final_result.get("mapping_states", []),
-                source="benchmark:main",
-                gold_abbrs=gold_abbrs,
-            )
-        except Exception:
-            pass
-
-        if not final_correct:
-            try:
-                from services.error_collector import collect_gold_mismatch
-                collect_gold_mismatch(
-                    text=case["text"],
-                    stage="expansion",
-                    source="benchmark:main",
-                    expected=case["expected_mappings"],
-                    predicted=predicted_mappings,
-                )
-            except Exception:
-                pass
 
         if final_correct:
             correct += 1
@@ -157,8 +148,13 @@ def run_benchmark():
             "category": case["category"],
             "text": case["text"],
             "success": result.get("success"),
+            "expansion_success": result.get("expansion_success"),
+            "standardization_success": result.get("standardization_success"),
+            "success_breakdown": success_breakdown,
             "expected_mappings": case["expected_mappings"],
             "predicted_mappings": predicted_mappings,
+            "mapping_states": mapping_states,
+            "mapping_standardizations": compact_standardizations,
             "final_expanded_text": final_expanded_text,
             "mapping_correct": is_correct,
             "text_check": text_check,
@@ -192,7 +188,7 @@ def run_benchmark():
             print(f'  Final Text: {result.get("final_expanded_text")}')
             print(f'  Mapping Correct: {result.get("mapping_correct")}')
             print(f'  Text Check: {result.get("text_check")}')
-    output_path = BACKEND_DIR / "evaluation" / "benchmark_results.json"
+    output_path = output_path or BACKEND_DIR / "evaluation" / "benchmark_results.json"
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(

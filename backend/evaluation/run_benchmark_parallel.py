@@ -26,7 +26,7 @@ from services.abbr_service import ABBRService
 
 # 并发数:同时跑几个 case。I/O 密集,4 个一般够;太高 DeepSeek 会限流(429/断连)。
 # 也可以用环境变量覆盖:set BENCH_WORKERS=6
-MAX_WORKERS = int(os.getenv("BENCH_WORKERS", "4"))
+MAX_WORKERS = int(os.getenv("BENCH_WORKERS", "2"))
 
 
 # ── 每个线程一份独立的 ABBRService ────────────────────────────────
@@ -64,7 +64,7 @@ def compare_text_contains(final_text, expected_text_contains):
 def run_one_case(case):
     """跑单个 case → 返回它的结果 dict。会被多个线程并发调用。"""
     service = get_service()           # 拿到【本线程】的 service
-
+ 
     # per-case 重试:某次网络瞬断只影响这一个 case,不拖垮整轮
     result = None
     for _try in range(3):
@@ -81,6 +81,19 @@ def run_one_case(case):
     final_result = result.get("final_result", {}) or {}
     predicted_mappings = final_result.get("mappings", [])
     final_expanded_text = final_result.get("expanded_text", "")
+    mapping_states = final_result.get("mapping_states", []) or []
+    mapping_standardizations = final_result.get("mapping_standardizations", []) or []
+    success_breakdown = result.get("success_breakdown") or final_result.get("success_breakdown") or {}
+    compact_standardizations = [
+        {
+            "abbreviation": item.get("abbreviation"),
+            "expansion": item.get("expansion"),
+            "chosen_concept": item.get("chosen_concept"),
+            "candidate_count": len(item.get("candidates") or []),
+            "top_candidates": (item.get("candidates") or [])[:3],
+        }
+        for item in mapping_standardizations
+    ]
 
     is_correct = compare_mappings_snomed(service, case["expected_mappings"], predicted_mappings)
     text_check = compare_text_contains(final_expanded_text, case.get("expected_text_contains"))
@@ -89,8 +102,13 @@ def run_one_case(case):
     return {
         "id": case["id"], "category": case["category"], "text": case["text"],
         "success": result.get("success"),
+        "expansion_success": result.get("expansion_success"),
+        "standardization_success": result.get("standardization_success"),
+        "success_breakdown": success_breakdown,
         "expected_mappings": case["expected_mappings"],
         "predicted_mappings": predicted_mappings,
+        "mapping_states": mapping_states,
+        "mapping_standardizations": compact_standardizations,
         "final_expanded_text": final_expanded_text,
         "mapping_correct": is_correct, "text_check": text_check, "correct": final_correct,
     }
@@ -117,14 +135,29 @@ def run_benchmark():
 
     # ── 下面汇总 + 打印 + 存盘,和串行版完全一致 ──
     correct = sum(1 for r in results if r["correct"])
+    business_success_count = sum(1 for r in results if r.get("success"))
+    expansion_success_count = sum(1 for r in results if r.get("expansion_success"))
+    standardization_success_count = sum(1 for r in results if r.get("standardization_success"))
     category_stats = {}
     for r in results:
         c = r["category"]
         if c not in category_stats:
-            category_stats[c] = {"total": 0, "correct": 0}
+            category_stats[c] = {
+                "total": 0,
+                "correct": 0,
+                "business_success": 0,
+                "expansion_success": 0,
+                "standardization_success": 0,
+            }
         category_stats[c]["total"] += 1
         if r["correct"]:
             category_stats[c]["correct"] += 1
+        if r.get("success"):
+            category_stats[c]["business_success"] += 1
+        if r.get("expansion_success"):
+            category_stats[c]["expansion_success"] += 1
+        if r.get("standardization_success"):
+            category_stats[c]["standardization_success"] += 1
 
     accuracy = correct / total if total > 0 else 0
 
@@ -132,6 +165,9 @@ def run_benchmark():
     print(f"Total Cases:{total}")
     print(f"Correct:{correct}")
     print(f"Expansion Accuracy:{accuracy:.4f}")
+    print(f"Business Success:{business_success_count}/{total}")
+    print(f"Expansion Success:{expansion_success_count}/{total}")
+    print(f"Standardization Success:{standardization_success_count}/{total}")
 
     print("\n ==== Category Results ====")
     for category, stats in category_stats.items():
@@ -144,6 +180,8 @@ def run_benchmark():
             print(f'- {result["id"]} | {result["category"]}')
             print(f'  Text: {result["text"]}')
             print(f'  System Success: {result.get("success")}')
+            print(f'  Expansion Success: {result.get("expansion_success")}')
+            print(f'  Standardization Success: {result.get("standardization_success")}')
             print(f'  Expected: {result["expected_mappings"]}')
             print(f'  Predicted: {result["predicted_mappings"]}')
             print(f'  Final Text: {result.get("final_expanded_text")}')
@@ -152,9 +190,16 @@ def run_benchmark():
 
     output_path = BACKEND_DIR / "evaluation" / "benchmark_results.json"
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump({"total": total, "correct": correct, "accuracy": accuracy,
-                   "category_stats": category_stats, "results": results},
-                  f, ensure_ascii=False, indent=2)
+        json.dump({
+            "total": total,
+            "correct": correct,
+            "accuracy": accuracy,
+            "business_success_count": business_success_count,
+            "expansion_success_count": expansion_success_count,
+            "standardization_success_count": standardization_success_count,
+            "category_stats": category_stats,
+            "results": results,
+        }, f, ensure_ascii=False, indent=2)
     print(f"\nBenchmark results saved to: {output_path}")
 
 

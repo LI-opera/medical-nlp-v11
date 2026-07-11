@@ -72,7 +72,16 @@ class ABBRCandidateFallbackRetriever:
         }}
         """
         
-        response = self.llm.invoke(prompt)
+        try:
+            response = self.llm.invoke(prompt)
+        except Exception as exc:
+            return {
+                "abbreviation": abbreviation,
+                "candidates": [],
+                "reason": "Fallback retriever raised an exception.",
+                "error_kind": "exception",
+                "error": str(exc),
+            }
 
         content = response.content.strip()
         content = content.replace("```json", "").replace("```", "").strip()
@@ -84,6 +93,15 @@ class ABBRCandidateFallbackRetriever:
                 "abbreviation": abbreviation,
                 "candidates": [],
                 "reason": "Fallback retriever did not return valid JSON.",
-                "raw_output": content
+                "error_kind": "invalid_json",
+                "raw_output": content,
+            }
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("candidates", []), list):
+            return {
+                "abbreviation": abbreviation,
+                "candidates": [],
+                "reason": "Fallback retriever returned an invalid response schema.",
+                "error_kind": "invalid_schema",
+                "raw_output": content,
             }
         return parsed
