@@ -29,8 +29,9 @@ sys.path.append(str(BACKEND_DIR))
 load_dotenv(BACKEND_DIR / ".env", override=True)
 
 from services.diagnosis_explainer import explain_benchmark_payload
+from evaluation.paths import ERROR_ANALYSIS_REPORT_PATH
 
-INPUT_REPORT = BACKEND_DIR / "evaluation" / "error_analysis_report.json"
+INPUT_REPORT = ERROR_ANALYSIS_REPORT_PATH
 OUT_DIR = BACKEND_DIR / "logs" / "triage"
 REPORT = OUT_DIR / "error_triage_report.md"
 CANDIDATE_GOLD = OUT_DIR / "candidate_gold_cases.json"

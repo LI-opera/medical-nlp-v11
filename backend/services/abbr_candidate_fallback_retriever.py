@@ -10,7 +10,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(CURRENT_DIR)
 ENV_PATH = os.path.join(BACKEND_DIR, ".env")
 
-load_dotenv(ENV_PATH, override=True)
+load_dotenv(ENV_PATH, override=False)
 
 class ABBRCandidateFallbackRetriever:
     #缩写候选兜底召回器。

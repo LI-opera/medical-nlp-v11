@@ -1,10 +1,18 @@
 import json
+import sys
 from pathlib import Path
 
 
 CURRENT_DIR = Path(__file__).resolve().parent
-RESULT_PATH = CURRENT_DIR / "benchmark_results.json"
-OUTPUT_PATH = CURRENT_DIR / "error_analysis_report.json"
+sys.path.append(str(CURRENT_DIR.parent))
+from evaluation.paths import (
+    BENCHMARK_RESULTS_PATH,
+    ERROR_ANALYSIS_REPORT_PATH,
+    ensure_archive_dir,
+)
+
+RESULT_PATH = BENCHMARK_RESULTS_PATH
+OUTPUT_PATH = ERROR_ANALYSIS_REPORT_PATH
 
 
 def normalize_mapping_set(mappings: list[dict]) -> set[tuple[str, str]]:
@@ -389,6 +397,7 @@ def build_legacy_business_diagnostics(all_results: list[dict]) -> dict:
 
 
 def main():
+    ensure_archive_dir()
     with open(RESULT_PATH, "r", encoding="utf-8") as f:
         benchmark_data = json.load(f)
 

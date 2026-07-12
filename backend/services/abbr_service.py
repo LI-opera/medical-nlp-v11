@@ -16,7 +16,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(CURRENT_DIR)
 ENV_PATH = os.path.join(BACKEND_DIR, ".env")
 #加了 override=True 就会强制覆盖旧值，用 .env 里的内容替换 Python 进程里已有的环境变量。
-load_dotenv(ENV_PATH,override=True)
+load_dotenv(ENV_PATH, override=False)
 #load_dotenv()
 #目标
 """ABBRService

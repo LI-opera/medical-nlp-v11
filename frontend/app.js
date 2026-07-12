@@ -25,11 +25,16 @@ const samples = [
   "The patient has ABC and SOB.",
 ];
 
+// 前端与 FastAPI 同源部署时，直接使用当前页面来源，避免用户手动配置端口。
+const defaultApiBase = window.location.origin && window.location.origin !== "null"
+  ? window.location.origin
+  : "http://127.0.0.1:8000";
+
 const state = {
   route: "analyze",
   tab: "mappings",
-  text: samples[0],
-  apiBase: localStorage.getItem("medicalNlpApiBase") || "http://127.0.0.1:8000",
+  text: "",
+  apiBase: defaultApiBase,
   health: null,
   healthError: "",
   analyzing: false,
@@ -738,7 +743,7 @@ function renderShell(content) {
     <div class="shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-title">Medical NLP V11</div>
+          <img class="sidebar-logo" src="/frontend/assets/medical-nlp-sidebar-logo.png" alt="Medical NLP V11" />
           <div class="brand-subtitle">缩写扩写、标准化、错误复盘与候选沉淀工作台</div>
         </div>
         <nav class="nav">
@@ -760,20 +765,12 @@ function renderShell(content) {
             `).join("")}
           </div>
         </nav>
-        <div class="sidebar-note">
-          第一版前端直接调用 FastAPI。LangGraph 暂时只作为流程说明，不参与生产执行。
-        </div>
       </aside>
       <main class="main">
         <header class="topbar">
           <div class="topbar-left">
             <div class="page-title">${meta.title}</div>
             <div class="page-kicker">${meta.kicker}</div>
-          </div>
-          <div class="api-box">
-            <input id="apiBase" value="${escapeHtml(state.apiBase)}" aria-label="API Base" />
-            <button class="btn ghost" id="saveApi">保存 API</button>
-            ${state.health ? statusPill("ok", "API ok") : statusPill(false, "API unknown")}
           </div>
         </header>
         <section class="content">
@@ -790,10 +787,6 @@ function renderShell(content) {
     button.addEventListener("click", () => setRoute(button.dataset.route));
   });
 
-  document.getElementById("saveApi").addEventListener("click", () => {
-    setApiBase(document.getElementById("apiBase").value);
-    checkHealth();
-  });
 }
 
 function renderPromotionConfirmModal() {
@@ -989,6 +982,7 @@ function renderAnalyze() {
   const result = state.analyzeResult;
 
   return `
+    <div class="analyze-page">
     <section class="panel">
       <div class="panel-header">
         <div>
@@ -1021,7 +1015,7 @@ function renderAnalyze() {
         </div>
       </div>
       <div class="panel-body">
-        <div class="result-text">${escapeHtml(result?.expanded_text || "暂无结果")}</div>
+        <div class="result-text ${result?.expanded_text ? "" : "result-placeholder"}">${escapeHtml(result?.expanded_text || "暂无结果")}</div>
       </div>
     </section>
 
@@ -1039,6 +1033,7 @@ function renderAnalyze() {
     </section>
 
     ${renderRawJsonDisclosure(result)}
+    </div>
   `;
 }
 
@@ -1693,7 +1688,7 @@ function renderTriageCards(markdown, emptyText) {
           </div>
           ${card.what ? `
             <div class="triage-section">
-              <div class="triage-section-title">发生了什么</div>
+              <div class="triage-section-title">情况</div>
               <p>${escapeHtml(card.what)}</p>
             </div>
           ` : ""}
@@ -1784,7 +1779,7 @@ function renderErrors() {
       <div class="panel-header">
         <div>
             <div class="panel-title">Benchmark LLM Triage 报告</div>
-          <div class="panel-subtitle">只展示 LLM 生成的人话解释；点击上方错误类型后展示对应 case。</div>
+          <div class="panel-subtitle">只展示 LLM 解释；点击上方错误类型后展示对应 case。</div>
         </div>
       </div>
       <div class="panel-body">

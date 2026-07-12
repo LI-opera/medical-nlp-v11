@@ -44,6 +44,13 @@ from evaluation.apply_fallback_candidate_promotions import (
     norm_expansion,
     plan_items,
 )
+from evaluation.paths import (
+    BENCHMARK_RESULTS_PATH,
+    ERROR_ANALYSIS_REPORT_PATH,
+    FALLBACK_PROMOTIONS_JSON_PATH,
+    FALLBACK_PROMOTIONS_MD_PATH,
+    rollover_runtime_to_archive,
+)
 #导入FastAPI
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,6 +72,19 @@ app = FastAPI(
     description = "医学缩写扩写、术语标准化、Verification 与 Reflection API",
     version = "0.1.0"
 )
+
+
+@app.on_event("startup")
+def start_new_runtime_session():
+    """服务重启时结束上一会话，避免旧结果继续冒充当前结果。"""
+    moved = rollover_runtime_to_archive()
+    if moved:
+        log_benchmark(
+            "benchmark.runtime.rollover",
+            component="api.main",
+            moved_files=moved,
+            ok=True,
+        )
 
 app.add_middleware(
     CORSMiddleware,
@@ -293,7 +313,7 @@ def frontend_app():
 
 @app.get("/benchmark/summary", response_model=BenchmarkSummaryResponse)
 def get_benchmark_summary():
-    benchmark_path = BACKEND_DIR / "evaluation" / "benchmark_results.json"
+    benchmark_path = BENCHMARK_RESULTS_PATH
 
     if not benchmark_path.exists():
         return {
@@ -316,7 +336,7 @@ def get_benchmark_summary():
 
 @app.get("/benchmark/results")
 def get_benchmark_results():
-    benchmark_path = BACKEND_DIR / "evaluation" / "benchmark_results.json"
+    benchmark_path = BENCHMARK_RESULTS_PATH
 
     if not benchmark_path.exists():
         return {
@@ -394,7 +414,7 @@ def _run_benchmark_postprocess(progress_callback=None) -> dict:
     steps.append({
         "name": "error_analysis_report",
         "ok": True,
-        "path": str(BACKEND_DIR / "evaluation" / "error_analysis_report.json"),
+        "path": str(ERROR_ANALYSIS_REPORT_PATH),
     })
 
     if progress_callback:
@@ -416,15 +436,15 @@ def _run_benchmark_postprocess(progress_callback=None) -> dict:
 
     if progress_callback:
         progress_callback("fallback_promotions", "正在沉淀 fallback 候选", 94)
-    benchmark_path = BACKEND_DIR / "evaluation" / "benchmark_results.json"
+    benchmark_path = BENCHMARK_RESULTS_PATH
     stage_start = time.perf_counter()
     benchmark_data = json.loads(benchmark_path.read_text(encoding="utf-8"))
     promotions_report = collect_fallback_candidate_promotions.build_report(
         benchmark_data,
         benchmark_path,
     )
-    promotions_json = BACKEND_DIR / "evaluation" / "fallback_candidate_promotions.json"
-    promotions_md = BACKEND_DIR / "evaluation" / "fallback_candidate_promotions.md"
+    promotions_json = FALLBACK_PROMOTIONS_JSON_PATH
+    promotions_md = FALLBACK_PROMOTIONS_MD_PATH
     promotions_json.write_text(
         json.dumps(promotions_report, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -467,7 +487,7 @@ def _run_benchmark_case_job(job_id: str, cases: list[dict]):
     # 持久化的结果由 run_benchmark 和后处理阶段写入文件。
     from evaluation.run_benchmark import run_benchmark
 
-    benchmark_path = BACKEND_DIR / "evaluation" / "benchmark_results.json"
+    benchmark_path = BENCHMARK_RESULTS_PATH
 
     try:
         log_benchmark(
@@ -502,11 +522,14 @@ def _run_benchmark_case_job(job_id: str, cases: list[dict]):
                 case_id=event.get("case_id"),
                 category=event.get("category"),
             )
-
+        #这里是异步接口
+        #改变这里的worker次数可以改变串行并行执行逻辑
+        #worker=1为串行，woker>1为并行
         run_benchmark(
             cases=cases,
             output_path=benchmark_path,
             progress_callback=benchmark_progress,
+            workers=2,
         )
 
         _set_benchmark_job(
@@ -597,9 +620,11 @@ def upload_and_run_benchmark_cases(payload: dict):
     from evaluation.run_benchmark import run_benchmark
 
     cases = _load_uploaded_cases(payload)
-    benchmark_path = BACKEND_DIR / "evaluation" / "benchmark_results.json"
-
-    run_benchmark(cases=cases, output_path=benchmark_path)
+    benchmark_path = BENCHMARK_RESULTS_PATH
+    #同步接口
+    #改变这里的worker次数可以改变串行并行执行逻辑
+    #worker=1为串行，woker>1为并行
+    run_benchmark(cases=cases, output_path=benchmark_path,workers=2)
     normalized_data = json.loads(benchmark_path.read_text(encoding="utf-8"))
     normalized_data["source"] = "uploaded_cases"
     normalized_data["uploaded_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -672,11 +697,7 @@ def get_benchmark_cases_job(job_id: str):
     response_model=ErrorAnalysisSummaryResponse
 )
 def get_error_analysis_summary():
-    report_path = (
-        BACKEND_DIR
-        / "evaluation"
-        / "error_analysis_report.json"
-    )
+    report_path = ERROR_ANALYSIS_REPORT_PATH
 
     if not report_path.exists():
         return {
@@ -695,7 +716,7 @@ def get_error_analysis_summary():
 
 @app.get("/error-analysis/report")
 def get_error_analysis_report():
-    report_path = BACKEND_DIR / "evaluation" / "error_analysis_report.json"
+    report_path = ERROR_ANALYSIS_REPORT_PATH
 
     if not report_path.exists():
         return {
@@ -710,6 +731,12 @@ def get_error_analysis_report():
 
 @app.get("/error-analysis/triage")
 def get_error_triage_report():
+    if not ERROR_ANALYSIS_REPORT_PATH.exists():
+        return {
+            "exists": False,
+            "markdown": "",
+        }
+
     report_path = BACKEND_DIR / "logs" / "triage" / "error_triage_report.md"
 
     if not report_path.exists():
@@ -788,11 +815,7 @@ def apply_items_to_primary(items: list[dict]) -> dict:
 
 @app.get("/candidate-promotions")
 def get_candidate_promotions():
-    promotions_path = (
-        BACKEND_DIR
-        / "evaluation"
-        / "fallback_candidate_promotions.json"
-    )
+    promotions_path = FALLBACK_PROMOTIONS_JSON_PATH
 
     if not promotions_path.exists():
         return {
@@ -999,4 +1022,3 @@ def expand_abbreviation_simple(
         ok=True,
     )
     return response
-

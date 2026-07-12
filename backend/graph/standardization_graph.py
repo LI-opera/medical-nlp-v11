@@ -1,12 +1,12 @@
-"""
-L3 Stage-6c: LangGraph 单 mapping 粒度可视化（路由岔路 + 反思环都显式）。
+"""V11 生产标准化状态机的 LangGraph 参考实现。
 
-图建模“单个缩写 mapping 的 agentic 标准化之旅”：
-  route ─Drug→ retrieve_rxnorm / ─else→ retrieve_snomed → verify
-       → (需反思?) propose_requery → re_retrieve → re_verify ⇄ propose_requery → finalize
-外层“一句话里多个 mapping”的编排放在 run() 里（逐 mapping 跑图后拼回整句结果）。
-节点只调 svc 现有方法；leaf 逻辑复刻 expand_verify_with_retry + _reflect_refine_standardization。
-不进生产热路径。注：verify 逐 mapping 调用，与生产批量调用方式不同 → 结果级一致（非逐字节等价）。
+该图用于流程展示和 parity 对照，不进入 FastAPI 生产热路径。图以单个
+mapping 为执行粒度，外层 ``run`` 负责把多个 mapping 拼回一句话的结果。
+生产链路仍由 ``ABBRService.expand_verify_with_retry`` 负责；本文件只跟随
+生产状态、失败证据、反思停止条件和最终结果语义。
+
+注意：Graph 的 verifier 是逐 mapping 调用，而生产服务会批量验证 pending
+records。因此 parity 比较的是最终文本、状态和 concept_id，不宣称逐字节等价。
 """
 from typing import Optional, TypedDict
 
@@ -70,6 +70,26 @@ class StandardizationGraph:
             for d in docs[:10]
         ]
 
+    @staticmethod
+    def _withheld_failure(record, validation=None):
+        """按生产 API 的语义记录标准化拒绝及其候选证据。"""
+        validation = validation or {}
+        return {
+            "type": "CODE_WITHHELD",
+            "stage": "standardization",
+            "reason": validation.get("reason")
+            or "no faithful clinical concept among retrieved candidates",
+            "evidence": {
+                "retrieved_top": [
+                    c.get("concept_name")
+                    for c in (record.get("std_cache") or [])[:5]
+                ],
+                "candidate_count": len(record.get("std_cache") or []),
+                "source": record.get("source"),
+                "domain": record.get("domain"),
+            },
+        }
+
     def n_retrieve_snomed(self, state):
         self._retrieve(state["record"], "snomed")
         return {"record": state["record"]}
@@ -109,18 +129,7 @@ class StandardizationGraph:
             r["status"], r["failure"] = "CODED", None
         else:
             r["status"] = "WITHHELD"
-            r["failure"] = {
-                "type": "CODE_WITHHELD",
-                "stage": "standardization",
-                "reason": (
-                    v.get("reason") if v else None
-                ) or "no faithful SNOMED concept among retrieved candidates",
-                "evidence": {
-                    "retrieved_top": [
-                        c.get("concept_name") for c in (r["std_cache"] or [])[:5]
-                    ]
-                },
-            }
+            r["failure"] = self._withheld_failure(r, v)
         return {"record": r}
 
     # ---- 反思环（复刻 _reflect_refine_standardization，逐 mapping）----
@@ -311,14 +320,18 @@ class StandardizationGraph:
         visible = [r for r in records if r["expansion"] and r["status"] != "ABSTAIN"]
         expanded = svc._build_expanded_text_deterministic(text, visible)
 
+        attempts = []
         for r in records:
             if r["status"] == "PENDING":
-                self.app.invoke({
+                graph_result = self.app.invoke({
                     "text": text,
                     "expanded_text": expanded,
                     "record": r,
                     "reflect_iter": 0,
                 })
+                # 节点会就地更新 record，但显式回写返回状态，避免未来节点改为
+                # 不可变状态时 Graph 外层悄悄丢失标准化结果。
+                r.update(graph_result.get("record") or {})
 
         for r in records:
             if r["status"] == "PENDING":
@@ -337,16 +350,28 @@ class StandardizationGraph:
         standardization_success = success_breakdown["standardization_success"]
         success = expansion_success and standardization_success
         final_result = {
+            "attempt": 1,
             "expanded_text": expanded,
+            "abbreviation_candidates": [
+                {
+                    "abbreviation": r["abbreviation"],
+                    "expansion": r.get("expansion"),
+                    "source": r.get("source"),
+                    "domain": r.get("domain"),
+                }
+                for r in records
+            ],
             "mappings": [
                 {
                     "abbreviation": r["abbreviation"],
                     "expansion": r["expansion"],
                     "label": r["label"],
                     "source": r["source"],
+                    "status": r["status"],
                 }
                 for r in resolved
             ],
+            "verification": None,
             "mapping_standardizations": [
                 {
                     "abbreviation": r["abbreviation"],
@@ -362,6 +387,8 @@ class StandardizationGraph:
                     "expansion": r["expansion"],
                     "source": r["source"],
                     "status": r["status"],
+                    "domain": r.get("domain"),
+                    "chosen_concept": r.get("std_concept"),
                     "coverage": r["coverage"],
                     "failure": r["failure"],
                 }

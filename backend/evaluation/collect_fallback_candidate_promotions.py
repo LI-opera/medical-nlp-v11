@@ -7,11 +7,18 @@ from typing import Any
 
 CURRENT_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = CURRENT_DIR.parent
-DEFAULT_INPUT = CURRENT_DIR / "benchmark_results.json"
-DEFAULT_JSON_OUTPUT = CURRENT_DIR / "fallback_candidate_promotions.json"
-DEFAULT_MD_OUTPUT = CURRENT_DIR / "fallback_candidate_promotions.md"
-
 sys.path.append(str(BACKEND_DIR))
+from evaluation.paths import (
+    BENCHMARK_RESULTS_PATH,
+    FALLBACK_PROMOTIONS_JSON_PATH,
+    FALLBACK_PROMOTIONS_MD_PATH,
+    ensure_archive_dir,
+)
+
+DEFAULT_INPUT = BENCHMARK_RESULTS_PATH
+DEFAULT_JSON_OUTPUT = FALLBACK_PROMOTIONS_JSON_PATH
+DEFAULT_MD_OUTPUT = FALLBACK_PROMOTIONS_MD_PATH
+
 from data.abbr_candidates import ABBR_CANDIDATES  # noqa: E402
 
 
@@ -204,6 +211,7 @@ def render_item(item: dict[str, Any]) -> list[str]:
 
 
 def main() -> None:
+    ensure_archive_dir()
     parser = argparse.ArgumentParser(
         description="Collect fallback-generated candidates that were successfully coded."
     )

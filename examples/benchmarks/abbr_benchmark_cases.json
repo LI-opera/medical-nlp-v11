@@ -1,0 +1,885 @@
+{
+    "description":  "V11 abbreviation benchmark cases: 50 project-authored cases plus 24 CASI-grounded cases.",
+    "cases":  [
+                  {
+                      "id":  "single_001",
+                      "category":  "single_meaning",
+                      "text":  "The patient denies SOB.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "single_002",
+                      "category":  "single_meaning",
+                      "text":  "The patient has HTN.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "HTN",
+                                                    "expansion":  "hypertension"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "single_003",
+                      "category":  "single_meaning",
+                      "text":  "The patient has DM.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "DM",
+                                                    "expansion":  "diabetes mellitus"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "single_004",
+                      "category":  "single_meaning",
+                      "text":  "The patient developed AKI after dehydration.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "AKI",
+                                                    "expansion":  "Acute Kidney Injury"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "single_005",
+                      "category":  "single_meaning",
+                      "text":  "The patient has CAD.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CAD",
+                                                    "expansion":  "coronary artery disease"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "single_006",
+                      "category":  "single_meaning",
+                      "text":  "The patient has CHF.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CHF",
+                                                    "expansion":  "congestive heart failure"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "single_007",
+                      "category":  "single_meaning",
+                      "text":  "The patient has COPD.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "COPD",
+                                                    "expansion":  "chronic obstructive pulmonary disease"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "single_008",
+                      "category":  "single_meaning",
+                      "text":  "The patient has CKD.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CKD",
+                                                    "expansion":  "chronic kidney disease"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "single_009",
+                      "category":  "single_meaning",
+                      "text":  "The patient had MI last year.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "MI",
+                                                    "expansion":  "myocardial infarction"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "single_010",
+                      "category":  "single_meaning",
+                      "text":  "The patient underwent CABG.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CABG",
+                                                    "expansion":  "coronary artery bypass grafting"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "ambiguous_001",
+                      "category":  "ambiguous",
+                      "text":  "The patient reports CP radiating to the left arm.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CP",
+                                                    "expansion":  "chest pain"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "ambiguous_002",
+                      "category":  "ambiguous",
+                      "text":  "The child has a history of CP since birth.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CP",
+                                                    "expansion":  "cerebral palsy"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "ambiguous_003",
+                      "category":  "ambiguous",
+                      "text":  "The patient has MS with optic neuritis and limb weakness.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "MS",
+                                                    "expansion":  "multiple sclerosis"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "ambiguous_004",
+                      "category":  "ambiguous",
+                      "text":  "The patient has MS with a diastolic murmur.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "MS",
+                                                    "expansion":  "mitral stenosis"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "ambiguous_005",
+                      "category":  "ambiguous",
+                      "text":  "The patient has RA with joint pain and morning stiffness.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "RA",
+                                                    "expansion":  "rheumatoid arthritis"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "ambiguous_006",
+                      "category":  "ambiguous",
+                      "text":  "The patient is on RA for postoperative pain control.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "RA",
+                                                    "expansion":  "regional anesthesia"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "ambiguous_007",
+                      "category":  "ambiguous",
+                      "text":  "The patient has PE with sudden shortness of breath and chest pain.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "PE",
+                                                    "expansion":  "pulmonary embolism"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "ambiguous_008",
+                      "category":  "ambiguous",
+                      "text":  "The patient had a normal PE during the annual visit.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "PE",
+                                                    "expansion":  "physical examination"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "ambiguous_009",
+                      "category":  "ambiguous",
+                      "text":  "The patient has ASD with social communication difficulties.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "ASD",
+                                                    "expansion":  "autism spectrum disorder"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "ambiguous_010",
+                      "category":  "ambiguous",
+                      "text":  "The patient has ASD with a left-to-right shunt.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "ASD",
+                                                    "expansion":  "atrial septal defect"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "multi_001",
+                      "category":  "multi_abbreviation",
+                      "text":  "The patient has SOB and HTN.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                },
+                                                {
+                                                    "abbreviation":  "HTN",
+                                                    "expansion":  "hypertension"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "multi_002",
+                      "category":  "multi_abbreviation",
+                      "text":  "The patient has DM and CKD.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "DM",
+                                                    "expansion":  "diabetes mellitus"
+                                                },
+                                                {
+                                                    "abbreviation":  "CKD",
+                                                    "expansion":  "chronic kidney disease"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "multi_003",
+                      "category":  "multi_abbreviation",
+                      "text":  "The patient has CAD and CHF.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CAD",
+                                                    "expansion":  "coronary artery disease"
+                                                },
+                                                {
+                                                    "abbreviation":  "CHF",
+                                                    "expansion":  "congestive heart failure"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "multi_004",
+                      "category":  "multi_abbreviation",
+                      "text":  "The patient developed AKI on CKD.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "AKI",
+                                                    "expansion":  "Acute Kidney Injury"
+                                                },
+                                                {
+                                                    "abbreviation":  "CKD",
+                                                    "expansion":  "chronic kidney disease"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "multi_005",
+                      "category":  "multi_abbreviation",
+                      "text":  "The patient has COPD and SOB.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "COPD",
+                                                    "expansion":  "chronic obstructive pulmonary disease"
+                                                },
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "multi_006",
+                      "category":  "multi_abbreviation",
+                      "text":  "The patient has HTN, DM, and CAD.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "HTN",
+                                                    "expansion":  "hypertension"
+                                                },
+                                                {
+                                                    "abbreviation":  "DM",
+                                                    "expansion":  "diabetes mellitus"
+                                                },
+                                                {
+                                                    "abbreviation":  "CAD",
+                                                    "expansion":  "coronary artery disease"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "multi_007",
+                      "category":  "multi_abbreviation",
+                      "text":  "The patient had MI and later underwent CABG.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "MI",
+                                                    "expansion":  "myocardial infarction"
+                                                },
+                                                {
+                                                    "abbreviation":  "CABG",
+                                                    "expansion":  "coronary artery bypass grafting"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "multi_008",
+                      "category":  "multi_abbreviation",
+                      "text":  "The patient has CHF with SOB.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CHF",
+                                                    "expansion":  "congestive heart failure"
+                                                },
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "multi_009",
+                      "category":  "multi_abbreviation",
+                      "text":  "The patient has CP and SOB.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CP",
+                                                    "expansion":  "chest pain"
+                                                },
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "multi_010",
+                      "category":  "multi_abbreviation",
+                      "text":  "The patient has DM, HTN, and CKD.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "DM",
+                                                    "expansion":  "diabetes mellitus"
+                                                },
+                                                {
+                                                    "abbreviation":  "HTN",
+                                                    "expansion":  "hypertension"
+                                                },
+                                                {
+                                                    "abbreviation":  "CKD",
+                                                    "expansion":  "chronic kidney disease"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "coverage_001",
+                      "category":  "coverage_failed",
+                      "text":  "The patient has XYZ.",
+                      "expected_mappings":  [
+
+                                            ]
+                  },
+                  {
+                      "id":  "coverage_002",
+                      "category":  "coverage_failed",
+                      "text":  "The patient reports QQQ.",
+                      "expected_mappings":  [
+
+                                            ]
+                  },
+                  {
+                      "id":  "coverage_003",
+                      "category":  "low_context_abbreviation",
+                      "text":  "The patient has ABC and SOB.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "coverage_004",
+                      "category":  "coverage_failed",
+                      "text":  "The patient has HTN and ZZZ.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "HTN",
+                                                    "expansion":  "hypertension"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "coverage_005",
+                      "category":  "low_context_abbreviation",
+                      "text":  "The patient was evaluated for LMN.",
+                      "expected_mappings":  [
+
+                                            ]
+                  },
+                  {
+                      "id":  "coverage_006",
+                      "category":  "low_context_abbreviation",
+                      "text":  "The patient has DM and QRS.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "DM",
+                                                    "expansion":  "diabetes mellitus"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "coverage_007",
+                      "category":  "coverage_failed",
+                      "text":  "The patient denies TUV.",
+                      "expected_mappings":  [
+
+                                            ]
+                  },
+                  {
+                      "id":  "coverage_008",
+                      "category":  "low_context_abbreviation",
+                      "text":  "The patient has COPD and NOP.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "COPD",
+                                                    "expansion":  "chronic obstructive pulmonary disease"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "coverage_009",
+                      "category":  "low_context_abbreviation",
+                      "text":  "The patient was admitted with AKI and RST.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "AKI",
+                                                    "expansion":  "Acute Kidney Injury"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "coverage_010",
+                      "category":  "coverage_failed",
+                      "text":  "The patient has MNO.",
+                      "expected_mappings":  [
+
+                                            ]
+                  },
+                  {
+                      "id":  "negation_001",
+                      "category":  "negation_preservation",
+                      "text":  "The patient denies CP.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CP",
+                                                    "expansion":  "chest pain"
+                                                }
+                                            ],
+                      "expected_text_contains":  "denies chest pain"
+                  },
+                  {
+                      "id":  "negation_002",
+                      "category":  "negation_preservation",
+                      "text":  "The patient denies SOB.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                }
+                                            ],
+                      "expected_text_contains":  "denies shortness of breath"
+                  },
+                  {
+                      "id":  "negation_003",
+                      "category":  "negation_preservation",
+                      "text":  "The patient has no CP.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CP",
+                                                    "expansion":  "chest pain"
+                                                }
+                                            ],
+                      "expected_text_contains":  "no chest pain"
+                  },
+                  {
+                      "id":  "negation_004",
+                      "category":  "negation_preservation",
+                      "text":  "The patient has no SOB.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                }
+                                            ],
+                      "expected_text_contains":  "no shortness of breath"
+                  },
+                  {
+                      "id":  "negation_005",
+                      "category":  "negation_preservation",
+                      "text":  "The patient is without CP.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CP",
+                                                    "expansion":  "chest pain"
+                                                }
+                                            ],
+                      "expected_text_contains":  "without chest pain"
+                  },
+                  {
+                      "id":  "negation_006",
+                      "category":  "negation_preservation",
+                      "text":  "The patient is without SOB.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                }
+                                            ],
+                      "expected_text_contains":  "without shortness of breath"
+                  },
+                  {
+                      "id":  "negation_007",
+                      "category":  "negation_preservation",
+                      "text":  "The patient denies CP but reports SOB.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CP",
+                                                    "expansion":  "chest pain"
+                                                },
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                }
+                                            ],
+                      "expected_text_contains":  "denies chest pain"
+                  },
+                  {
+                      "id":  "negation_008",
+                      "category":  "negation_preservation",
+                      "text":  "The patient denies SOB but has CP.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                },
+                                                {
+                                                    "abbreviation":  "CP",
+                                                    "expansion":  "chest pain"
+                                                }
+                                            ],
+                      "expected_text_contains":  "denies shortness of breath"
+                  },
+                  {
+                      "id":  "negation_009",
+                      "category":  "negation_preservation",
+                      "text":  "No CP or SOB was reported.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "CP",
+                                                    "expansion":  "chest pain"
+                                                },
+                                                {
+                                                    "abbreviation":  "SOB",
+                                                    "expansion":  "shortness of breath"
+                                                }
+                                            ],
+                      "expected_text_contains":  "no chest pain"
+                  },
+                  {
+                      "id":  "negation_010",
+                      "category":  "negation_preservation",
+                      "text":  "The patient has HTN but denies CP.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "HTN",
+                                                    "expansion":  "hypertension"
+                                                },
+                                                {
+                                                    "abbreviation":  "CP",
+                                                    "expansion":  "chest pain"
+                                                }
+                                            ],
+                      "expected_text_contains":  "denies chest pain"
+                  },
+                  {
+                      "id":  "casi_ra_room_air",
+                      "category":  "casi_ambiguous",
+                      "text":  "On exam the patient was breathing comfortably on RA with an oxygen saturation of 98%.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "RA",
+                                                    "expansion":  "room air"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_ra_rheumatoid",
+                      "category":  "casi_ambiguous",
+                      "text":  "The patient has a long history of RA with symmetric joint swelling and morning stiffness.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "RA",
+                                                    "expansion":  "rheumatoid arthritis"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_ra_right_atrium",
+                      "category":  "casi_ambiguous",
+                      "text":  "The catheter tip was advanced into the RA under fluoroscopic guidance.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "RA",
+                                                    "expansion":  "right atrium"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_pa_posteroanterior",
+                      "category":  "casi_ambiguous",
+                      "text":  "A PA and lateral chest radiograph were obtained.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "PA",
+                                                    "expansion":  "posteroanterior"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_pa_physician_assistant",
+                      "category":  "casi_ambiguous",
+                      "text":  "The patient was seen by the PA in clinic for a routine follow-up visit.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "PA",
+                                                    "expansion":  "physician assistant"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_pa_pulmonary_artery",
+                      "category":  "casi_ambiguous",
+                      "text":  "Elevated PA pressures were noted on right heart catheterization.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "PA",
+                                                    "expansion":  "pulmonary artery"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_pcp_primary_care",
+                      "category":  "casi_ambiguous",
+                      "text":  "The patient was referred by their PCP for further evaluation of the abnormal labs.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "PCP",
+                                                    "expansion":  "primary care physician",
+                                                    "accept":  [
+                                                                   "primary care provider"
+                                                               ]
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_pcp_pneumonia",
+                      "category":  "casi_ambiguous",
+                      "text":  "The immunocompromised patient developed PCP with bilateral interstitial infiltrates and hypoxia.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "PCP",
+                                                    "expansion":  "pneumocystis pneumonia",
+                                                    "accept":  [
+                                                                   "pneumocystis jirovecii pneumonia",
+                                                                   "pneumocystis carinii pneumonia"
+                                                               ]
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_dc_discharge",
+                      "category":  "casi_ambiguous",
+                      "text":  "The patient was clinically stable and ready for DC home with outpatient follow-up.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "DC",
+                                                    "expansion":  "discharge"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_dc_discontinue",
+                      "category":  "casi_ambiguous",
+                      "text":  "Given the new rash, the decision was made to DC the antibiotic.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "DC",
+                                                    "expansion":  "discontinue"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_im_intramuscular",
+                      "category":  "casi_ambiguous",
+                      "text":  "The vaccine was administered IM into the deltoid.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "IM",
+                                                    "expansion":  "intramuscular"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_im_mononucleosis",
+                      "category":  "casi_ambiguous",
+                      "text":  "The young adult presented with fatigue, fever, and pharyngitis consistent with IM.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "IM",
+                                                    "expansion":  "infectious mononucleosis"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_bal_lavage",
+                      "category":  "casi_ambiguous",
+                      "text":  "Bronchoscopy with BAL was performed to evaluate the persistent infiltrate.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "BAL",
+                                                    "expansion":  "bronchoalveolar lavage"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_bal_alcohol",
+                      "category":  "casi_ambiguous",
+                      "text":  "The patient\u0027s BAL was 0.18 on arrival to the emergency department after the collision.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "BAL",
+                                                    "expansion":  "blood alcohol level"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_bm_bowel",
+                      "category":  "casi_ambiguous",
+                      "text":  "The patient reported a normal BM this morning without blood or melena.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "BM",
+                                                    "expansion":  "bowel movement"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_bm_marrow",
+                      "category":  "casi_ambiguous",
+                      "text":  "The BM biopsy showed hypercellularity with blasts consistent with acute leukemia.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "BM",
+                                                    "expansion":  "bone marrow"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_et_endotracheal",
+                      "category":  "casi_ambiguous",
+                      "text":  "The patient was intubated with a 7.5 ET tube and placed on the ventilator.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "ET",
+                                                    "expansion":  "endotracheal"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_et_tremor",
+                      "category":  "casi_ambiguous",
+                      "text":  "The patient has a long history of ET with a bilateral action tremor of the hands.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "ET",
+                                                    "expansion":  "essential tremor"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_fb_bp",
+                      "category":  "fallback_should_expand",
+                      "text":  "The patient\u0027s BP was elevated at 160/95 mmHg on arrival.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "BP",
+                                                    "expansion":  "blood pressure"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_fb_hr",
+                      "category":  "fallback_should_expand",
+                      "text":  "The patient\u0027s HR was 110 beats per minute and regular.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "HR",
+                                                    "expansion":  "heart rate"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_fb_rr",
+                      "category":  "fallback_should_expand",
+                      "text":  "The patient\u0027s RR was 24 breaths per minute with mild accessory muscle use.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "RR",
+                                                    "expansion":  "respiratory rate"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_fb_ecg",
+                      "category":  "fallback_should_expand",
+                      "text":  "The ECG showed ST-segment elevation in the inferior leads.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "ECG",
+                                                    "expansion":  "electrocardiogram"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_fb_abg",
+                      "category":  "fallback_should_expand",
+                      "text":  "The ABG revealed respiratory acidosis with hypoxemia.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "ABG",
+                                                    "expansion":  "arterial blood gas"
+                                                }
+                                            ]
+                  },
+                  {
+                      "id":  "casi_fb_ua",
+                      "category":  "fallback_should_expand",
+                      "text":  "The UA showed pyuria and bacteriuria.",
+                      "expected_mappings":  [
+                                                {
+                                                    "abbreviation":  "UA",
+                                                    "expansion":  "urinalysis"
+                                                }
+                                            ]
+                  }
+              ]
+}

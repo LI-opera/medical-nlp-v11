@@ -1,6 +1,7 @@
 import argparse
 import ast
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,10 @@ from typing import Any
 
 CURRENT_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = CURRENT_DIR.parent
-DEFAULT_INPUT = CURRENT_DIR / "fallback_candidate_promotions.json"
+sys.path.append(str(BACKEND_DIR))
+from evaluation.paths import FALLBACK_PROMOTIONS_JSON_PATH
+
+DEFAULT_INPUT = FALLBACK_PROMOTIONS_JSON_PATH
 DEFAULT_CANDIDATES_FILE = BACKEND_DIR / "data" / "abbr_candidates.py"
 
 

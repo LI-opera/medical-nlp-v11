@@ -251,10 +251,10 @@ GET  /benchmark/cases/jobs/{job_id}
 支持上传 benchmark cases JSON，后端会运行 benchmark，并继续生成：
 
 ```text
-benchmark_results.json
-error_analysis_report.json
+evaluation/archive/benchmark_results.json
+evaluation/archive/error_analysis_report.json
 error_triage_report.md
-fallback_candidate_promotions.json
+evaluation/archive/fallback_candidate_promotions.json
 ```
 
 ### fallback 候选沉淀
@@ -395,9 +395,9 @@ model_cache/
 .run-logs/
 backend/data/snomed_clinical.csv
 backend/data/rxnorm_clinical.csv
-backend/evaluation/benchmark_results.json
-backend/evaluation/error_analysis_report.json
-backend/evaluation/benchmark_results.backup_*.json
+backend/evaluation/archive/benchmark_results.json
+backend/evaluation/archive/error_analysis_report.json
+backend/evaluation/archive/benchmark_results.backup_*.json
 ```
 
 建议提交：

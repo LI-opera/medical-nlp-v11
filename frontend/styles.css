@@ -58,6 +58,16 @@ button {
   gap: 5px;
 }
 
+.sidebar-logo {
+  width: 212px;
+  height: 112px;
+  display: block;
+  object-fit: cover;
+  object-position: center;
+  border: 0;
+  border-radius: 0;
+}
+
 .brand-title {
   font-size: 18px;
   font-weight: 760;
@@ -144,6 +154,47 @@ button {
 .topbar-left {
   display: grid;
   gap: 3px;
+}
+
+.brand-logo {
+  width: 180px;
+  height: 68px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  flex: 0 0 auto;
+}
+
+.brand-logo img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center;
+}
+
+.analyze-page .panel-subtitle {
+  display: none;
+}
+
+.analyze-page .samples {
+  position: relative;
+  margin-top: 18px;
+  padding: 28px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.analyze-page .samples::before {
+  content: "示例";
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .page-title {
@@ -568,6 +619,13 @@ button {
   background: #f8fbff;
   line-height: 1.7;
   min-height: 76px;
+}
+
+.result-placeholder {
+  color: var(--muted);
+  opacity: 1;
+  font-style: normal;
+  font-weight: 400;
 }
 
 .tabs {
@@ -1199,6 +1257,12 @@ td {
     padding: 16px;
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .brand-logo {
+    width: 156px;
+    height: 56px;
+    align-self: flex-end;
   }
 
   .api-box {

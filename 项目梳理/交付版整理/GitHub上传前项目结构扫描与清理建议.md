@@ -29,13 +29,13 @@ frontend/app.js
 ```text
 benchmark cases
   -> evaluation/run_benchmark.py
-  -> evaluation/benchmark_results.json
+  -> evaluation/archive/benchmark_results.json
   -> evaluation/error_analysis_report.py
-  -> evaluation/error_analysis_report.json
+  -> evaluation/archive/error_analysis_report.json
   -> evaluation/error_triage.py
   -> logs/triage/error_triage_report.md
   -> evaluation/collect_fallback_candidate_promotions.py
-  -> evaluation/fallback_candidate_promotions.json
+  -> evaluation/archive/fallback_candidate_promotions.json
 ```
 
 ## 2. 当前目录的职责
@@ -103,11 +103,11 @@ benchmark cases
 
 #### 需要标注为实验/兼容入口的文件
 
-- `run_benchmark_parallel.py`：并行 benchmark 旧入口，当前 API 上传流程没有调用它。
+- `run_benchmark.py`：唯一 benchmark 入口；默认串行，传入 `--workers 2` 或设置 `BENCH_WORKERS=2` 后启用并行。
 - `run_source_ab.py`：来源对比实验，不属于日常主流程。
 - `run_concept_benchmark.py`、`concept_benchmark_cases.py`：概念检索独立评估，不是缩写主 benchmark。
 - `evaluate_abbr_expansion.py`、`abbr_eval_cases.py`：较早的扩写评估脚本，需要确认是否仍用于回归测试。
-- `abbr_benchmark_cases.py`、`abbr_benchmark_cases_casi.py`：正式 benchmark 样例源，建议后续统一命名和说明数据集关系。
+- `examples/benchmarks/abbr_benchmark_cases.json`：统一格式的 74 条默认 benchmark 样例，其中包含项目自建案例和 CASI 案例。
 
 #### 不建议提交的生成产物
 
@@ -120,7 +120,7 @@ benchmark cases
 - `upload_test_benchmark_cases_50.json`
 - `upload_test_benchmark_cases_60.json`
 
-其中，上传测试 cases 如果希望作为 GitHub 演示数据，可以单独移动到 `examples/benchmarks/`，而不是和运行结果放在一起。运行结果应由用户执行脚本后生成。
+上传测试 cases 和默认 benchmark 样例统一放在 `examples/benchmarks/`，运行结果放在 `backend/evaluation/archive/`，两类内容不再混放。
 
 ### 2.6 `backend/tools`
 
@@ -156,15 +156,15 @@ benchmark cases
 
 | 优先级 | 候选 | 判断 | 建议 |
 |---|---|---|---|
-| P0 | `backend/evaluation/benchmark_results.backup_*.json` | 运行备份产物，非代码 | 不提交；确认无需恢复后删除或移到本地归档 |
-| P0 | `backend/evaluation/error_analysis_report.json` 等报告 | 可重复生成 | 不提交，保留生成脚本 |
+| P0 | `backend/evaluation/archive/benchmark_results.backup_*.json` | 历史运行备份，非代码 | 不提交；仅本地需要时保留 |
+| P0 | `backend/evaluation/archive/*.json`、`*.md` | 可重复生成的报告 | 不提交，保留生成脚本 |
 | P0 | `.run-logs/`、`model_cache/` | 本地运行产物/模型缓存 | 加入 `.gitignore` |
 | P1 | `backend/services/ner_service.py` | 与 `medical_ner.py` 重复，仍有旧测试引用 | 先迁移/改测试，再决定删除 |
 | P1 | `backend/tools/create_milvus_db.py` | 与两个 rebuild 脚本有重叠 | 标注 legacy，确认无人使用后再处理 |
-| P1 | `backend/evaluation/run_benchmark_parallel.py` | 非当前上传 benchmark 主入口 | 标注 experimental 或移入实验目录 |
+| P1 | benchmark 并行逻辑 | 已合并到 `run_benchmark.py` | 通过 `workers` 参数或 `BENCH_WORKERS` 调试 |
 | P1 | `backend/graph/` | 当前主链路未接入 | 明确为实验/参考实现，避免 README 误导 |
 | P2 | `backend/services/笔记.md` | 代码目录中的临时笔记 | 提取有价值内容后移到项目梳理 |
-| P2 | `backend/evaluation/upload_test_benchmark_cases_*.json` | 上传测试样例 | 移入 `examples/benchmarks/` 或明确为本地测试数据 |
+| P2 | `examples/benchmarks/*.json` | Benchmark 输入样例 | 保留，作为 GitHub 可复现实例 |
 
 ## 4. `.gitignore` 补充建议
 
@@ -181,11 +181,8 @@ model_cache/
 .ruff_cache/
 
 # Generated benchmark artifacts
-backend/evaluation/benchmark_results*.json
-backend/evaluation/error_analysis_report.json
-backend/evaluation/error_taxonomy_report.json
-backend/evaluation/fallback_candidate_promotions.json
-backend/evaluation/fallback_candidate_promotions.md
+backend/evaluation/archive/*.json
+backend/evaluation/archive/*.md
 
 # Keep the safe environment template visible
 !.env.example
@@ -225,7 +222,7 @@ GitHub 上传前建议至少补齐：
 ### 阶段一：只做确认
 
 1. 保存当前 Git 快照。
-2. 确认 `ner_service.py`、`create_milvus_db.py`、`run_benchmark_parallel.py` 和 `graph/` 是否还需要保留。
+2. 确认 `create_milvus_db.py` 和 `graph/` 是否还需要保留；benchmark 并行入口已经合并。
 3. 确认上传 benchmark 样例是否作为 GitHub 演示数据。
 
 ### 阶段二：低风险清理
@@ -238,7 +235,7 @@ GitHub 上传前建议至少补齐：
 ### 阶段三：结构整理
 
 1. 建立 `backend/tests/` 并迁移测试。
-2. 建立 `examples/benchmarks/`。
+2. 维护 `examples/benchmarks/` 中的统一 JSON 样例。
 3. 将实验脚本和图实现移动到 `experimental/`，每次移动后跑回归测试。
 4. 最后重写 GitHub README。
 
@@ -255,8 +252,6 @@ GitHub 上传前建议至少补齐：
 - `frontend/utils/frontend_logger.js`：前端日志缓冲、Console 开关和上传后端逻辑。
 
 这些注释是给维护者定位流程用的，不替代模块文档，也不代表所有旧脚本都已经成为正式主链路。
-
-
 
 
 
