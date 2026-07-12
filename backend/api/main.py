@@ -13,8 +13,8 @@ import os
 import sys
 import json
 import threading
+import time
 import traceback
-import uuid
 from datetime import datetime
 from pathlib import Path
 #拿到backend目录
@@ -45,10 +45,19 @@ from evaluation.apply_fallback_candidate_promotions import (
     plan_items,
 )
 #导入FastAPI
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from utils.structured_logger import (
+    exc_meta,
+    log_app,
+    log_audit,
+    log_benchmark,
+    log_frontend,
+    text_meta,
+)
+from utils.trace_context import new_job_id, new_request_id, trace_context
 
 #创建API应用对象
 app = FastAPI(
@@ -86,12 +95,79 @@ service = None
 BENCHMARK_JOBS = {}
 BENCHMARK_JOBS_LOCK = threading.Lock()
 
+FRONTEND_LOG_MAX_ITEMS = 100
+FRONTEND_LOG_MAX_ITEM_BYTES = 8 * 1024
+FRONTEND_LOG_MAX_STRING = 1000
+
+
+def _truncate_frontend_log_value(value, max_chars=FRONTEND_LOG_MAX_STRING):
+    if isinstance(value, str):
+        return value if len(value) <= max_chars else value[:max_chars] + "...[truncated]"
+    if isinstance(value, dict):
+        return {
+            str(k): _truncate_frontend_log_value(v, max_chars)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_truncate_frontend_log_value(v, max_chars) for v in value[:50]]
+    return value
+
+
+def _safe_frontend_log_item(item):
+    if not isinstance(item, dict):
+        return None, "not_object"
+
+    sanitized = {
+        str(key): _truncate_frontend_log_value(value)
+        for key, value in item.items()
+        if key not in {"text", "raw_json", "analysis_result", "response_body"}
+    }
+
+    try:
+        size = len(json.dumps(sanitized, ensure_ascii=False).encode("utf-8"))
+    except TypeError:
+        sanitized = {str(k): str(v) for k, v in sanitized.items()}
+        size = len(json.dumps(sanitized, ensure_ascii=False).encode("utf-8"))
+
+    if size > FRONTEND_LOG_MAX_ITEM_BYTES:
+        return None, "too_large"
+
+    return sanitized, None
+
 
 def get_service():
     global service
 
+    # ABBRService 采用懒加载，导入 API 时不立即连接 Milvus，也不提前初始化
+    # Embedding/LLM，直到收到第一条实际分析请求后再创建服务。
     if service is None:
-        service = ABBRService()
+        start = time.perf_counter()
+        log_app(
+            "service.init_start",
+            component="api.main",
+            service="ABBRService",
+            ok=True,
+        )
+        try:
+            service = ABBRService()
+        except Exception as exc:
+            log_app(
+                "service.init_error",
+                component="api.main",
+                service="ABBRService",
+                duration_ms=round((time.perf_counter() - start) * 1000, 2),
+                ok=False,
+                level="ERROR",
+                **exc_meta(exc),
+            )
+            raise
+        log_app(
+            "service.init_ok",
+            component="api.main",
+            service="ABBRService",
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+            ok=True,
+        )
 
     return service
 
@@ -133,6 +209,57 @@ def health_check():
     }
 
 
+@app.post("/frontend-log")
+def collect_frontend_logs(payload: dict):
+    logs = payload.get("logs") if isinstance(payload, dict) else None
+    if not isinstance(logs, list):
+        raise HTTPException(
+            status_code=400,
+            detail="frontend log payload must contain logs: list",
+        )
+
+    accepted = 0
+    dropped = 0
+    reasons = {}
+
+    for item in logs[:FRONTEND_LOG_MAX_ITEMS]:
+        sanitized, reason = _safe_frontend_log_item(item)
+        if sanitized is None:
+            dropped += 1
+            reasons[reason or "invalid"] = reasons.get(reason or "invalid", 0) + 1
+            continue
+
+        event = str(sanitized.pop("event", "frontend.event"))
+        level = str(sanitized.pop("level", "INFO")).upper()
+        if level not in {"INFO", "WARNING", "ERROR"}:
+            level = "INFO"
+
+        sanitized.pop("component", None)
+        frontend_ts = sanitized.pop("ts", None)
+        ok = sanitized.pop("ok", None)
+        log_frontend(
+            event,
+            component="frontend.browser",
+            level=level,
+            ok=ok,
+            frontend_ts=frontend_ts,
+            **sanitized,
+        )
+        accepted += 1
+
+    if len(logs) > FRONTEND_LOG_MAX_ITEMS:
+        overflow = len(logs) - FRONTEND_LOG_MAX_ITEMS
+        dropped += overflow
+        reasons["too_many"] = reasons.get("too_many", 0) + overflow
+
+    return {
+        "ok": True,
+        "accepted": accepted,
+        "dropped": dropped,
+        "drop_reasons": reasons,
+    }
+
+
 @app.get("/app", response_class=HTMLResponse)
 def frontend_app():
     index_path = FRONTEND_DIR / "index.html"
@@ -144,6 +271,16 @@ def frontend_app():
 
     with open(index_path, "r", encoding="utf-8") as f:
         html = f.read()
+
+    app_js = FRONTEND_DIR / "app.js"
+    logger_js = FRONTEND_DIR / "utils" / "frontend_logger.js"
+    styles_css = FRONTEND_DIR / "styles.css"
+    app_version = str(int(app_js.stat().st_mtime)) if app_js.exists() else str(int(time.time()))
+    logger_version = str(int(logger_js.stat().st_mtime)) if logger_js.exists() else str(int(time.time()))
+    style_version = str(int(styles_css.stat().st_mtime)) if styles_css.exists() else str(int(time.time()))
+    html = html.replace("__APP_VERSION__", app_version)
+    html = html.replace("__LOGGER_VERSION__", logger_version)
+    html = html.replace("__STYLE_VERSION__", style_version)
 
     return HTMLResponse(
         html,
@@ -229,15 +366,31 @@ def _load_uploaded_cases(payload) -> list[dict]:
 
 
 def _run_benchmark_postprocess(progress_callback=None) -> dict:
+    # 所有 benchmark 派生页面都从本轮结果文件重新生成，确保 Overview、Error
+    # Analysis 和 Fallback Promotions 使用同一套数据，不残留上一轮结果。
     from evaluation import collect_fallback_candidate_promotions
     from evaluation import error_analysis_report
     from evaluation import error_triage
 
     steps = []
+    postprocess_start = time.perf_counter()
+    log_benchmark(
+        "benchmark.postprocess.start",
+        component="api.main",
+        ok=True,
+    )
 
     if progress_callback:
         progress_callback("error_analysis_report", "正在生成错误分析数据", 72)
+    stage_start = time.perf_counter()
     error_analysis_report.main()
+    log_benchmark(
+        "benchmark.postprocess.stage_ok",
+        component="api.main",
+        stage="error_analysis_report",
+        duration_ms=round((time.perf_counter() - stage_start) * 1000, 2),
+        ok=True,
+    )
     steps.append({
         "name": "error_analysis_report",
         "ok": True,
@@ -246,7 +399,15 @@ def _run_benchmark_postprocess(progress_callback=None) -> dict:
 
     if progress_callback:
         progress_callback("error_triage", "正在生成 LLM 错误解读", 82)
+    stage_start = time.perf_counter()
     error_triage.main()
+    log_benchmark(
+        "benchmark.postprocess.stage_ok",
+        component="api.main",
+        stage="error_triage",
+        duration_ms=round((time.perf_counter() - stage_start) * 1000, 2),
+        ok=True,
+    )
     steps.append({
         "name": "error_triage",
         "ok": True,
@@ -256,6 +417,7 @@ def _run_benchmark_postprocess(progress_callback=None) -> dict:
     if progress_callback:
         progress_callback("fallback_promotions", "正在沉淀 fallback 候选", 94)
     benchmark_path = BACKEND_DIR / "evaluation" / "benchmark_results.json"
+    stage_start = time.perf_counter()
     benchmark_data = json.loads(benchmark_path.read_text(encoding="utf-8"))
     promotions_report = collect_fallback_candidate_promotions.build_report(
         benchmark_data,
@@ -278,6 +440,21 @@ def _run_benchmark_postprocess(progress_callback=None) -> dict:
         "total_items": promotions_report.get("total_items", 0),
         "new_item_count": promotions_report.get("new_item_count", 0),
     })
+    log_benchmark(
+        "benchmark.postprocess.stage_ok",
+        component="api.main",
+        stage="fallback_candidate_promotions",
+        duration_ms=round((time.perf_counter() - stage_start) * 1000, 2),
+        total_items=promotions_report.get("total_items", 0),
+        new_item_count=promotions_report.get("new_item_count", 0),
+        ok=True,
+    )
+    log_benchmark(
+        "benchmark.postprocess.end",
+        component="api.main",
+        duration_ms=round((time.perf_counter() - postprocess_start) * 1000, 2),
+        ok=True,
+    )
 
     return {
         "ok": True,
@@ -286,11 +463,20 @@ def _run_benchmark_postprocess(progress_callback=None) -> dict:
 
 
 def _run_benchmark_case_job(job_id: str, cases: list[dict]):
+    # 长时间运行的 benchmark 任务状态保存在内存中，供前端轮询；真正需要
+    # 持久化的结果由 run_benchmark 和后处理阶段写入文件。
     from evaluation.run_benchmark import run_benchmark
 
     benchmark_path = BACKEND_DIR / "evaluation" / "benchmark_results.json"
 
     try:
+        log_benchmark(
+            "benchmark.api_job.start",
+            component="api.main",
+            job_id=job_id,
+            total=len(cases),
+            ok=True,
+        )
         _set_benchmark_job(
             job_id,
             status="running",
@@ -374,7 +560,25 @@ def _run_benchmark_case_job(job_id: str, cases: list[dict]):
             total=len(cases),
             result=result,
         )
+        log_benchmark(
+            "benchmark.api_job.end",
+            component="api.main",
+            job_id=job_id,
+            total=len(cases),
+            correct=result.get("correct"),
+            accuracy=result.get("accuracy"),
+            ok=True,
+        )
     except Exception as exc:
+        log_benchmark(
+            "benchmark.api_job.error",
+            component="api.main",
+            job_id=job_id,
+            total=len(cases),
+            ok=False,
+            level="ERROR",
+            **exc_meta(exc),
+        )
         _set_benchmark_job(
             job_id,
             status="failed",
@@ -431,7 +635,7 @@ def upload_and_run_benchmark_cases(payload: dict):
 @app.post("/benchmark/cases/jobs")
 def create_benchmark_cases_job(payload: dict):
     cases = _load_uploaded_cases(payload)
-    job_id = uuid.uuid4().hex
+    job_id = new_job_id("bench")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _set_benchmark_job(
         job_id,
@@ -561,6 +765,15 @@ def apply_items_to_primary(items: list[dict]) -> dict:
         ABBR_CANDIDATES.clear()
         ABBR_CANDIDATES.update(candidates)
 
+    log_audit(
+        "audit.primary.apply",
+        component="api.main",
+        target_file=str(candidates_path),
+        appended_count=len(result["appended"]),
+        skipped_count=len(result["skipped"]),
+        abbreviations=[item.get("abbreviation") for item in result["appended"]],
+        ok=True,
+    )
     return {
         "ok": True,
         "message": "candidate promotions applied.",
@@ -681,14 +894,45 @@ service.expand_verify_with_retry(
 #简单版
 @app.post("/expand/simple",response_model=SimpleExpandResponse)
 def expand_abbreviation_simple(
-        request: ExpandRequest
+        request: ExpandRequest,
+        x_frontend_request_id: str | None = Header(
+            default=None,
+            alias="X-Frontend-Request-Id",
+        ),
 ):
-    abbr_service = get_service()
+    request_id = new_request_id("ana")
+    start = time.perf_counter()
+    with trace_context(
+        request_id=request_id,
+        frontend_request_id=x_frontend_request_id,
+    ):
+        log_app(
+            "api.expand_simple.start",
+            component="api.main",
+            path="/expand/simple",
+            method="POST",
+            ok=True,
+            **text_meta(request.text),
+        )
+        try:
+            abbr_service = get_service()
 
-    result = abbr_service.expand_verify_with_retry(
-        text=request.text,
-        max_retries=2
-    )
+            result = abbr_service.expand_verify_with_retry(
+                text=request.text,
+                max_retries=2
+            )
+        except Exception as exc:
+            log_app(
+                "api.expand_simple.error",
+                component="api.main",
+                path="/expand/simple",
+                method="POST",
+                duration_ms=round((time.perf_counter() - start) * 1000, 2),
+                ok=False,
+                level="ERROR",
+                **exc_meta(exc),
+            )
+            raise
 
     final_result = result.get("final_result", {}) or {}
 
@@ -708,7 +952,8 @@ def expand_abbreviation_simple(
             "score": top.get("score"),
         })
 
-    return {
+    response = {
+        "request_id": request_id,
         "success": result.get(
             "success",
             False
@@ -738,4 +983,20 @@ def expand_abbreviation_simple(
             []
         ),
     }
+    log_app(
+        "api.expand_simple.end",
+        component="api.main",
+        path="/expand/simple",
+        method="POST",
+        request_id=request_id,
+        frontend_request_id=x_frontend_request_id,
+        duration_ms=round((time.perf_counter() - start) * 1000, 2),
+        success=response["success"],
+        expansion_success=response["expansion_success"],
+        standardization_success=response["standardization_success"],
+        mapping_count=len(response["mappings"]),
+        mapping_state_count=len(response["mapping_states"]),
+        ok=True,
+    )
+    return response
 

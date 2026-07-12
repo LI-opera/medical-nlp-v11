@@ -6,6 +6,8 @@ from services.abbr_candidate_coverage_evaluator import ABBRCandidateCoverageEval
 from services.abbr_candidate_fallback_retriever import ABBRCandidateFallbackRetriever
 from data.abbr_candidates import ABBR_CANDIDATES, reload_abbr_candidates_if_changed
 import re
+import time
+from utils.structured_logger import log_pipeline, text_meta
 #加载环境变量
 import os
 from dotenv import load_dotenv
@@ -258,12 +260,22 @@ class ABBRService:
         return
 
     def expand_verify_with_retry(self, text: str, max_retries: int = 2):
+        # 这是生产主链路的编排入口：先完成候选检索和 coverage 判断，再进行
+        # 确定性文本替换；已经接受的扩写词随后进入标准化、验证和反思流程。
         """Expand abbreviations, standardize, and verify with a unified data flow.
         Each abbreviation uses one record from retrieval through final output, with
         explicit lifecycle status (NOT_EXPANDED/PENDING/CODED/WITHHELD/ABSTAIN)
         and failure details. Existing response fields are preserved while strict
         success details are added.
         """
+        pipeline_start = time.perf_counter()
+        log_pipeline(
+            "pipeline.start",
+            component="ABBRService",
+            max_retries=max_retries,
+            ok=True,
+            **text_meta(text),
+        )
         attempts = []
         candidate_infos = self._get_abbreviation_candidates(text)
         current_abbreviation_candidates = candidate_infos
@@ -343,6 +355,21 @@ class ABBRService:
                 "success_breakdown": success_breakdown,
             }
             attempts.append(attempt_result)
+            log_pipeline(
+                "pipeline.final",
+                component="ABBRService",
+                duration_ms=round((time.perf_counter() - pipeline_start) * 1000, 2),
+                success=False,
+                expansion_success=success_breakdown["expansion_success"],
+                standardization_success=success_breakdown["standardization_success"],
+                target_count=success_breakdown["target_count"],
+                expanded_count=success_breakdown["expanded_count"],
+                coded_count=success_breakdown["coded_count"],
+                withheld_count=success_breakdown["withheld_count"],
+                not_expanded_count=success_breakdown["not_expanded_count"],
+                stop_reason="coverage_failed_no_valid_expansion",
+                ok=True,
+            )
             return {
                 "original_text": text,
                 "final_expanded_text": current_expanded_text,
@@ -493,6 +520,22 @@ class ABBRService:
             "success_breakdown": success_breakdown,
         }
 
+        log_pipeline(
+            "pipeline.final",
+            component="ABBRService",
+            duration_ms=round((time.perf_counter() - pipeline_start) * 1000, 2),
+            success=success,
+            expansion_success=expansion_success,
+            standardization_success=standardization_success,
+            attempt_count=len(attempts),
+            target_count=success_breakdown["target_count"],
+            expanded_count=success_breakdown["expanded_count"],
+            coded_count=success_breakdown["coded_count"],
+            withheld_count=success_breakdown["withheld_count"],
+            not_expanded_count=success_breakdown["not_expanded_count"],
+            mapping_count=len(final_mappings),
+            ok=True,
+        )
         return {
             "original_text": text,
             "final_expanded_text": current_expanded_text,

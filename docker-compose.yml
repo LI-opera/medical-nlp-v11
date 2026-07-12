@@ -1,16 +1,70 @@
 services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: medical-nlp-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: >
+      etcd
+      -advertise-client-urls=http://127.0.0.1:2379
+      -listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    volumes:
+      - etcd_data:/etcd
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: medical-nlp-minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: minio server /minio_data
+    volumes:
+      - minio_data:/minio_data
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    container_name: medical-nlp-milvus
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - etcd
+      - minio
+    volumes:
+      - milvus_data:/var/lib/milvus
+    restart: unless-stopped
+
   api:
     build: .
     container_name: medical-nlp-api
-
     ports:
       - "8000:8000"
-
     env_file:
       - backend/.env
-
     environment:
-      MILVUS_URI: http://host.docker.internal:19530
+      MILVUS_URI: http://milvus:19530
       MILVUS_COLLECTION_NAME: concepts_only_name
-
+      MILVUS_RXNORM_COLLECTION: rxnorm_concepts
+    depends_on:
+      - milvus
+    volumes:
+      - ./backend/logs:/app/backend/logs
+      - ./backend/evaluation:/app/backend/evaluation
+      - ./backend/data:/app/backend/data
+      - ./model_cache/huggingface:/root/.cache/huggingface
     restart: unless-stopped
+
+volumes:
+  etcd_data:
+  minio_data:
+  milvus_data:

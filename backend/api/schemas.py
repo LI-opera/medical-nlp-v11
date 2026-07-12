@@ -27,6 +27,7 @@ class SimpleExpandResponse(BaseModel):
     简洁版扩写结果。
     """
 
+    request_id: str | None = None
     success: bool
     expansion_success: bool = False
     standardization_success: bool = False

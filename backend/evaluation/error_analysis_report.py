@@ -19,6 +19,8 @@ def normalize_mapping_set(mappings: list[dict]) -> set[tuple[str, str]]:
 
 
 def classify_error_type(result: dict) -> str:
+    # 这些标签描述 case 级别的失败维度；record 状态会单独统计，不能直接
+    # 加到 case 数量中，否则会把一句话里的多个实体重复计数。
     category = result.get("category")
     if category == "low_context_abbreviation":
         return "low_context_over_expansion"

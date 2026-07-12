@@ -67,26 +67,88 @@ const state = {
 
 const app = document.getElementById("app");
 
+const frontendLogger = window.frontendLogger;
+const {
+  randomId,
+  hashText,
+  truncate,
+  errorType,
+  errorSummary,
+  safeResponseSize,
+  safeTextMeta,
+} = window.frontendLogUtils;
+
+frontendLogger.setContextProvider(() => ({
+  route: state.route,
+  apiBase: state.apiBase,
+}));
+
 function apiUrl(path) {
   const base = state.apiBase.replace(/\/$/, "");
   return `${base}${path}`;
 }
 
 async function fetchJson(path, options = {}) {
-  const response = await fetch(apiUrl(path), {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-    ...options,
+  const startedAt = performance.now();
+  const frontendRequestId = randomId("fe_req");
+  const method = options.method || "GET";
+  frontendLogger.info("api.request_start", {
+    path,
+    method,
+    frontend_request_id: frontendRequestId,
   });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 160)}`);
-  }
+  try {
+    const response = await fetch(apiUrl(path), {
+      headers: {
+        "Content-Type": "application/json",
+        "X-Frontend-Request-Id": frontendRequestId,
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
 
-  return response.json();
+    if (!response.ok) {
+      const text = await response.text();
+      const error = new Error(`${response.status} ${response.statusText}: ${text.slice(0, 160)}`);
+      frontendLogger.error("api.request_error", {
+        path,
+        method,
+        status: response.status,
+        status_text: response.statusText,
+        duration_ms: Math.round(performance.now() - startedAt),
+        frontend_request_id: frontendRequestId,
+        error_type: errorType(error),
+        error_summary: `${response.status} ${response.statusText}`,
+      });
+      throw error;
+    }
+
+    const data = await response.json();
+    frontendLogger.info("api.request_ok", {
+      path,
+      method,
+      status: response.status,
+      status_text: response.statusText,
+      duration_ms: Math.round(performance.now() - startedAt),
+      frontend_request_id: frontendRequestId,
+      backend_request_id: data?.request_id || null,
+      response_size: safeResponseSize(data),
+    });
+    return data;
+  } catch (error) {
+    if (!(error instanceof Error && /^\d{3}\s/.test(error.message))) {
+      frontendLogger.error("api.request_error", {
+        path,
+        method,
+        duration_ms: Math.round(performance.now() - startedAt),
+        frontend_request_id: frontendRequestId,
+        error_type: errorType(error),
+        error_summary: errorSummary(error),
+      });
+    }
+    throw error;
+  }
 }
 
 function sleep(ms) {
@@ -233,6 +295,10 @@ function canPromoteSingleCandidate(stateItem, concept) {
 }
 
 function setRoute(route) {
+  frontendLogger.info("ui.route.change", {
+    from_route: state.route,
+    to_route: route,
+  });
   state.route = route;
   state.tab = "mappings";
   render();
@@ -242,20 +308,35 @@ function setRoute(route) {
 function setApiBase(value) {
   state.apiBase = value.trim() || "http://127.0.0.1:8000";
   localStorage.setItem("medicalNlpApiBase", state.apiBase);
+  frontendLogger.info("ui.api_base.save", {
+    api_base: state.apiBase,
+  });
 }
 
 async function checkHealth() {
+  const startedAt = performance.now();
   state.healthError = "";
+  frontendLogger.info("ui.health.check_start");
   try {
     state.health = await fetchJson("/health");
+    frontendLogger.info("ui.health.check_ok", {
+      duration_ms: Math.round(performance.now() - startedAt),
+    });
   } catch (error) {
     state.health = null;
     state.healthError = error.message;
+    frontendLogger.error("ui.health.check_error", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      error_type: errorType(error),
+      error_summary: errorSummary(error),
+    });
   }
   render();
 }
 
 async function runAnalyze() {
+  const startedAt = performance.now();
+  frontendLogger.info("ui.analyze.click", safeTextMeta(state.text));
   state.analyzing = true;
   state.analyzeError = "";
   state.analyzeResult = null;
@@ -268,8 +349,24 @@ async function runAnalyze() {
       method: "POST",
       body: JSON.stringify({ text: state.text }),
     });
+    frontendLogger.info("ui.analyze.result_ok", {
+      ...safeTextMeta(state.text),
+      duration_ms: Math.round(performance.now() - startedAt),
+      backend_request_id: state.analyzeResult?.request_id || null,
+      success: Boolean(state.analyzeResult?.success),
+      expansion_success: Boolean(state.analyzeResult?.expansion_success),
+      standardization_success: Boolean(state.analyzeResult?.standardization_success),
+      mapping_count: (state.analyzeResult?.mappings || []).length,
+      mapping_state_count: (state.analyzeResult?.mapping_states || []).length,
+    });
   } catch (error) {
     state.analyzeError = error.message;
+    frontendLogger.error("ui.analyze.result_error", {
+      ...safeTextMeta(state.text),
+      duration_ms: Math.round(performance.now() - startedAt),
+      error_type: errorType(error),
+      error_summary: errorSummary(error),
+    });
   } finally {
     state.analyzing = false;
     render();
@@ -278,6 +375,11 @@ async function runAnalyze() {
 
 async function runDiagnosis() {
   if (!state.analyzeResult) return;
+  const startedAt = performance.now();
+  frontendLogger.info("ui.diagnosis.click", {
+    ...safeTextMeta(state.text),
+    mapping_state_count: (state.analyzeResult?.mapping_states || []).length,
+  });
   state.diagnosing = true;
   state.diagnosisError = "";
   state.diagnosis = null;
@@ -291,8 +393,17 @@ async function runDiagnosis() {
         analysis_result: state.analyzeResult,
       }),
     });
+    frontendLogger.info("ui.diagnosis.result_ok", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      response_size: safeResponseSize(state.diagnosis),
+    });
   } catch (error) {
     state.diagnosisError = error.message;
+    frontendLogger.error("ui.diagnosis.result_error", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      error_type: errorType(error),
+      error_summary: errorSummary(error),
+    });
   } finally {
     state.diagnosing = false;
     render();
@@ -300,11 +411,23 @@ async function runDiagnosis() {
 }
 
 async function loadBenchmark() {
+  const startedAt = performance.now();
   state.benchmarkError = "";
   try {
     state.benchmark = await fetchJson("/benchmark/results");
+    frontendLogger.info("ui.benchmark.load_ok", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      total: state.benchmark?.total,
+      correct: state.benchmark?.correct,
+      accuracy: state.benchmark?.accuracy,
+    });
   } catch (error) {
     state.benchmarkError = error.message;
+    frontendLogger.error("ui.benchmark.load_error", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      error_type: errorType(error),
+      error_summary: errorSummary(error),
+    });
   }
   render();
 }
@@ -312,6 +435,11 @@ async function loadBenchmark() {
 async function uploadBenchmarkFile(file) {
   if (!file || state.benchmarkUploading) return;
 
+  const startedAt = performance.now();
+  frontendLogger.info("ui.benchmark.upload_click", {
+    file_name: file.name,
+    file_size: file.size,
+  });
   state.benchmarkUploading = true;
   state.benchmarkUploadProgress = 1;
   state.benchmarkUploadJob = {
@@ -326,10 +454,36 @@ async function uploadBenchmarkFile(file) {
 
   try {
     const text = await file.text();
-    const payload = JSON.parse(text);
+    frontendLogger.info("ui.benchmark.file_read_ok", {
+      file_name: file.name,
+      file_size: file.size,
+    });
+
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch (error) {
+      frontendLogger.error("ui.benchmark.file_parse_error", {
+        file_name: file.name,
+        file_size: file.size,
+        error_type: errorType(error),
+        error_summary: errorSummary(error),
+      });
+      throw error;
+    }
+
+    const caseCount = Array.isArray(payload?.cases) ? payload.cases.length : null;
     const job = await fetchJson("/benchmark/cases/jobs", {
       method: "POST",
       body: JSON.stringify(payload),
+    });
+    frontendLogger.info("ui.benchmark.job_create_ok", {
+      file_name: file.name,
+      file_size: file.size,
+      case_count: caseCount,
+      job_id: job.id,
+      stage: job.stage,
+      progress: Number(job.progress || 0),
     });
 
     state.benchmarkUploadJob = job;
@@ -337,18 +491,51 @@ async function uploadBenchmarkFile(file) {
     render();
 
     let latest = job;
+    let lastLoggedStage = latest.stage || latest.status || "";
+    let lastLoggedProgressBucket = Math.floor(Number(latest.progress || 0) / 10);
     while (latest.status !== "completed" && latest.status !== "failed") {
       await sleep(1000);
       latest = await fetchJson(`/benchmark/cases/jobs/${encodeURIComponent(job.id)}`);
       state.benchmarkUploadJob = latest;
       state.benchmarkUploadProgress = Number(latest.progress || state.benchmarkUploadProgress || 0);
+      const currentStage = latest.stage || latest.status || "";
+      const currentProgressBucket = Math.floor(Number(latest.progress || 0) / 10);
+      if (currentStage !== lastLoggedStage || currentProgressBucket > lastLoggedProgressBucket) {
+        frontendLogger.info("ui.benchmark.job_poll", {
+          job_id: job.id,
+          stage: latest.stage,
+          status: latest.status,
+          progress: Number(latest.progress || 0),
+          current: latest.current,
+          total: latest.total,
+        });
+        lastLoggedStage = currentStage;
+        lastLoggedProgressBucket = currentProgressBucket;
+      }
       render();
     }
 
     if (latest.status === "failed") {
+      frontendLogger.error("ui.benchmark.job_failed", {
+        job_id: job.id,
+        stage: latest.stage,
+        status: latest.status,
+        progress: Number(latest.progress || 0),
+        duration_ms: Math.round(performance.now() - startedAt),
+        error_summary: truncate(latest.error || latest.message || "benchmark cases 运行失败", 160),
+      });
       throw new Error(latest.error || latest.message || "benchmark cases 运行失败");
     }
 
+    frontendLogger.info("ui.benchmark.job_completed", {
+      job_id: job.id,
+      stage: latest.stage,
+      status: latest.status,
+      progress: Number(latest.progress || 100),
+      total: latest.total,
+      accuracy: latest.result?.accuracy,
+      duration_ms: Math.round(performance.now() - startedAt),
+    });
     state.benchmarkUploadProgress = 100;
     state.benchmarkUploadResult = latest.result;
     state.errors = null;
@@ -360,6 +547,13 @@ async function uploadBenchmarkFile(file) {
     state.benchmarkUploadProgress = 100;
   } catch (error) {
     state.benchmarkUploadError = error.message;
+    frontendLogger.error("ui.benchmark.upload_error", {
+      file_name: file.name,
+      file_size: file.size,
+      duration_ms: Math.round(performance.now() - startedAt),
+      error_type: errorType(error),
+      error_summary: errorSummary(error),
+    });
   } finally {
     state.benchmarkUploading = false;
     render();
@@ -367,6 +561,7 @@ async function uploadBenchmarkFile(file) {
 }
 
 async function loadErrors() {
+  const startedAt = performance.now();
   state.errorsError = "";
   try {
     const [report, triage] = await Promise.all([
@@ -375,18 +570,42 @@ async function loadErrors() {
     ]);
     state.errors = report;
     state.triage = triage;
+    const summary = report?.overall_failure_analysis || {};
+    const failedCases = summary.failure_cases || report?.failed_cases || report?.failure_cases || [];
+    frontendLogger.info("ui.errors.load_ok", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      failed_case_count: failedCases.length,
+      triage_exists: Boolean(triage?.exists),
+    });
   } catch (error) {
     state.errorsError = error.message;
+    frontendLogger.error("ui.errors.load_error", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      error_type: errorType(error),
+      error_summary: errorSummary(error),
+    });
   }
   render();
 }
 
 async function loadPromotions() {
+  const startedAt = performance.now();
   state.promotionsError = "";
   try {
     state.promotions = await fetchJson("/candidate-promotions");
+    frontendLogger.info("ui.promotions.load_ok", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      total_items: state.promotions?.total_items,
+      new_item_count: state.promotions?.new_item_count,
+      already_exists_count: state.promotions?.already_exists_count,
+    });
   } catch (error) {
     state.promotionsError = error.message;
+    frontendLogger.error("ui.promotions.load_error", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      error_type: errorType(error),
+      error_summary: errorSummary(error),
+    });
   }
   render();
 }
@@ -397,6 +616,12 @@ async function applyPromotions() {
   const newCount = state.promotions?.new_item_count || 0;
   if (!items.length || !newCount) return;
 
+  const startedAt = performance.now();
+  frontendLogger.info("ui.promotions.apply_confirm", {
+    total_items: state.promotions?.total_items,
+    new_item_count: newCount,
+    already_exists_count: state.promotions?.already_exists_count,
+  });
   state.promotionConfirmOpen = false;
   state.applyingPromotions = true;
   state.promotionApplyProgress = 8;
@@ -419,6 +644,11 @@ async function applyPromotions() {
     state.promotionApplyProgress = 100;
     state.promotionApplyResult = result;
     state.applyingPromotions = false;
+    frontendLogger.info("ui.promotions.apply_ok", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      appended_count: result?.appended_count,
+      skipped_count: result?.skipped_count,
+    });
     await loadPromotions();
     state.promotionApplyProgress = 100;
     state.promotionApplyResult = result;
@@ -426,6 +656,11 @@ async function applyPromotions() {
     window.clearInterval(timer);
     state.applyingPromotions = false;
     state.promotionApplyError = error.message;
+    frontendLogger.error("ui.promotions.apply_error", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      error_type: errorType(error),
+      error_summary: errorSummary(error),
+    });
   } finally {
     render();
   }
@@ -433,6 +668,12 @@ async function applyPromotions() {
 
 async function applySinglePromotion() {
   if (state.singlePromotionApplying || !state.singlePromotionItem) return;
+  const startedAt = performance.now();
+  frontendLogger.info("ui.promotions.apply_single_confirm", {
+    abbreviation: state.singlePromotionItem.abbreviation,
+    expansion_hash: hashText(state.singlePromotionItem.expansion),
+    domain: state.singlePromotionItem.domain,
+  });
   state.singlePromotionConfirmOpen = false;
   state.singlePromotionApplying = true;
   state.singlePromotionProgress = 10;
@@ -460,10 +701,26 @@ async function applySinglePromotion() {
       [state.singlePromotionKey]: result,
     };
     state.singlePromotionApplying = false;
+    frontendLogger.info("ui.promotions.apply_single_ok", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      abbreviation: state.singlePromotionItem.abbreviation,
+      expansion_hash: hashText(state.singlePromotionItem.expansion),
+      domain: state.singlePromotionItem.domain,
+      appended_count: result?.appended_count,
+      skipped_count: result?.skipped_count,
+    });
   } catch (error) {
     window.clearInterval(timer);
     state.singlePromotionApplying = false;
     state.singlePromotionError = error.message;
+    frontendLogger.error("ui.promotions.apply_single_error", {
+      duration_ms: Math.round(performance.now() - startedAt),
+      abbreviation: state.singlePromotionItem.abbreviation,
+      expansion_hash: hashText(state.singlePromotionItem.expansion),
+      domain: state.singlePromotionItem.domain,
+      error_type: errorType(error),
+      error_summary: errorSummary(error),
+    });
   } finally {
     render();
   }
@@ -616,6 +873,7 @@ function bindRouteEvents() {
     const diagnosisButton = document.getElementById("runDiagnosis");
     if (diagnosisButton) diagnosisButton.addEventListener("click", runDiagnosis);
     document.getElementById("clearText").addEventListener("click", () => {
+      frontendLogger.info("ui.analyze.clear_click");
       state.text = "";
       state.analyzeResult = null;
       state.diagnosis = null;
@@ -625,6 +883,10 @@ function bindRouteEvents() {
     document.querySelectorAll("[data-sample]").forEach((button) => {
       button.addEventListener("click", () => {
         state.text = samples[Number(button.dataset.sample)];
+        frontendLogger.info("ui.analyze.sample_click", {
+          sample_index: Number(button.dataset.sample),
+          ...safeTextMeta(state.text),
+        });
         render();
       });
     });
@@ -636,12 +898,22 @@ function bindRouteEvents() {
         state.singlePromotionKey = promotionKey(payload);
         state.singlePromotionConfirmOpen = true;
         state.singlePromotionError = "";
+        frontendLogger.info("ui.promotions.apply_single_click", {
+          abbreviation: payload.abbreviation,
+          expansion_hash: hashText(payload.expansion),
+          domain: payload.domain,
+        });
         render();
       });
     });
     const cancelSingle = document.getElementById("cancelSinglePromotion");
     if (cancelSingle) cancelSingle.addEventListener("click", () => {
       state.singlePromotionConfirmOpen = false;
+      frontendLogger.info("ui.promotions.apply_single_cancel", {
+        abbreviation: state.singlePromotionItem?.abbreviation,
+        expansion_hash: hashText(state.singlePromotionItem?.expansion),
+        domain: state.singlePromotionItem?.domain,
+      });
       render();
     });
     const confirmSingle = document.getElementById("confirmSinglePromotion");
@@ -650,11 +922,17 @@ function bindRouteEvents() {
 
   if (state.route === "benchmarkOverview") {
     const refresh = document.getElementById("refreshBenchmark");
-    if (refresh) refresh.addEventListener("click", loadBenchmark);
+    if (refresh) refresh.addEventListener("click", () => {
+      frontendLogger.info("ui.benchmark.refresh_click");
+      loadBenchmark();
+    });
     const uploadButton = document.getElementById("uploadBenchmarkButton");
     const uploadInput = document.getElementById("benchmarkUploadInput");
     if (uploadButton && uploadInput) {
-      uploadButton.addEventListener("click", () => uploadInput.click());
+      uploadButton.addEventListener("click", () => {
+        frontendLogger.info("ui.benchmark.upload_button_click");
+        uploadInput.click();
+      });
       uploadInput.addEventListener("change", () => {
         const file = uploadInput.files?.[0];
         uploadBenchmarkFile(file);
@@ -665,10 +943,16 @@ function bindRouteEvents() {
 
   if (state.route === "benchmarkErrors") {
     const refresh = document.getElementById("refreshErrors");
-    if (refresh) refresh.addEventListener("click", loadErrors);
+    if (refresh) refresh.addEventListener("click", () => {
+      frontendLogger.info("ui.errors.refresh_click");
+      loadErrors();
+    });
     document.querySelectorAll("[data-error-slice]").forEach((item) => {
       item.addEventListener("click", () => {
         state.selectedErrorSlice = item.dataset.errorSlice || "all";
+        frontendLogger.info("ui.errors.slice_select", {
+          selected_error_slice: state.selectedErrorSlice,
+        });
         render();
       });
     });
@@ -676,15 +960,24 @@ function bindRouteEvents() {
 
   if (state.route === "benchmarkPromotions") {
     const refresh = document.getElementById("refreshPromotions");
-    if (refresh) refresh.addEventListener("click", loadPromotions);
+    if (refresh) refresh.addEventListener("click", () => {
+      frontendLogger.info("ui.promotions.refresh_click");
+      loadPromotions();
+    });
     const apply = document.getElementById("applyPromotions");
     if (apply) apply.addEventListener("click", () => {
       state.promotionConfirmOpen = true;
+      frontendLogger.info("ui.promotions.apply_click", {
+        total_items: state.promotions?.total_items,
+        new_item_count: state.promotions?.new_item_count,
+        already_exists_count: state.promotions?.already_exists_count,
+      });
       render();
     });
     const cancel = document.getElementById("cancelPromotionApply");
     if (cancel) cancel.addEventListener("click", () => {
       state.promotionConfirmOpen = false;
+      frontendLogger.info("ui.promotions.apply_cancel");
       render();
     });
     const confirm = document.getElementById("confirmPromotionApply");
@@ -1672,6 +1965,27 @@ function table(headers, rows, trustedHtml = false) {
     </div>
   `;
 }
+
+window.addEventListener("error", (event) => {
+  frontendLogger.error("frontend.error", {
+    error_type: event.error?.name || "Error",
+    error_summary: truncate(event.message || event.error?.message || "", 160),
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+  });
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  frontendLogger.error("frontend.unhandled_rejection", {
+    error_type: errorType(event.reason),
+    error_summary: errorSummary(event.reason),
+  });
+});
+
+frontendLogger.info("ui.app.load", {
+  user_agent: navigator.userAgent,
+});
 
 checkHealth();
 render();

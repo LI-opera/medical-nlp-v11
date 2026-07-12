@@ -1,7 +1,9 @@
 import json
 import os
+import time
 from dotenv import load_dotenv
 from langchain_deepseek import ChatDeepSeek
+from utils.structured_logger import exc_meta, log_dependency
 
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -18,13 +20,31 @@ class ABBRCandidateFallbackRetriever:
         api_key = os.getenv("DEEPSEEK_API_KEY")
 
         if not api_key:
+            log_dependency(
+                "dependency.llm.config_error",
+                component="ABBRCandidateFallbackRetriever",
+                provider="deepseek",
+                model_name="deepseek-chat",
+                missing_env="DEEPSEEK_API_KEY",
+                ok=False,
+                level="ERROR",
+            )
             raise ValueError("DEEPSEEK_API_KEY is not set.")
 
+        start = time.perf_counter()
         self.llm = ChatDeepSeek(
             model="deepseek-chat",
             api_key=api_key.strip(),
             temperature=0,
             max_retries=2
+        )
+        log_dependency(
+            "dependency.llm.create_ok",
+            component="ABBRCandidateFallbackRetriever",
+            provider="deepseek",
+            model_name="deepseek-chat",
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+            ok=True,
         )
 
     def retrieve(self,abbreviation:str,context_text:str):
@@ -72,9 +92,31 @@ class ABBRCandidateFallbackRetriever:
         }}
         """
         
+        start = time.perf_counter()
+        log_dependency(
+            "dependency.llm.call_start",
+            component="ABBRCandidateFallbackRetriever",
+            provider="deepseek",
+            model_name="deepseek-chat",
+            purpose="fallback_candidate_retrieval",
+            abbreviation=abbreviation,
+            ok=True,
+        )
         try:
             response = self.llm.invoke(prompt)
         except Exception as exc:
+            log_dependency(
+                "dependency.llm.call_error",
+                component="ABBRCandidateFallbackRetriever",
+                provider="deepseek",
+                model_name="deepseek-chat",
+                purpose="fallback_candidate_retrieval",
+                abbreviation=abbreviation,
+                duration_ms=round((time.perf_counter() - start) * 1000, 2),
+                ok=False,
+                level="ERROR",
+                **exc_meta(exc),
+            )
             return {
                 "abbreviation": abbreviation,
                 "candidates": [],
@@ -84,6 +126,17 @@ class ABBRCandidateFallbackRetriever:
             }
 
         content = response.content.strip()
+        log_dependency(
+            "dependency.llm.call_ok",
+            component="ABBRCandidateFallbackRetriever",
+            provider="deepseek",
+            model_name="deepseek-chat",
+            purpose="fallback_candidate_retrieval",
+            abbreviation=abbreviation,
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+            output_len=len(content),
+            ok=True,
+        )
         content = content.replace("```json", "").replace("```", "").strip()
 
         try:

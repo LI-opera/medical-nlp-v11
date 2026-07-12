@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from utils.llm_config import DEEPSEEK_CONFIG
 from utils.llm_factory import create_llm
+from utils.structured_logger import exc_meta, log_dependency
 
 
 def _strip_json_fence(content: str) -> str:
@@ -12,8 +14,41 @@ def _strip_json_fence(content: str) -> str:
 
 
 def invoke_json_llm(prompt: str) -> dict[str, Any]:
+    start = time.perf_counter()
     model = create_llm(DEEPSEEK_CONFIG)
-    response = model.invoke(prompt)
+    log_dependency(
+        "dependency.llm.call_start",
+        component="diagnosis_explainer",
+        provider=str(DEEPSEEK_CONFIG.provider),
+        model_name=DEEPSEEK_CONFIG.model_name,
+        purpose="diagnosis_explanation",
+        ok=True,
+    )
+    try:
+        response = model.invoke(prompt)
+    except Exception as exc:
+        log_dependency(
+            "dependency.llm.call_error",
+            component="diagnosis_explainer",
+            provider=str(DEEPSEEK_CONFIG.provider),
+            model_name=DEEPSEEK_CONFIG.model_name,
+            purpose="diagnosis_explanation",
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+            ok=False,
+            level="ERROR",
+            **exc_meta(exc),
+        )
+        raise
+    log_dependency(
+        "dependency.llm.call_ok",
+        component="diagnosis_explainer",
+        provider=str(DEEPSEEK_CONFIG.provider),
+        model_name=DEEPSEEK_CONFIG.model_name,
+        purpose="diagnosis_explanation",
+        duration_ms=round((time.perf_counter() - start) * 1000, 2),
+        output_len=len(getattr(response, "content", "") or ""),
+        ok=True,
+    )
     data = json.loads(_strip_json_fence(response.content))
     if not isinstance(data, dict):
         raise ValueError("LLM response is not a JSON object.")

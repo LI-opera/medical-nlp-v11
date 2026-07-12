@@ -1,8 +1,10 @@
 import json
 import os
+import time
 from dotenv import load_dotenv
 from utils.llm_config import DEEPSEEK_CONFIG, LLMConfig
 from utils.llm_factory import create_llm
+from utils.structured_logger import exc_meta, log_dependency
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(CURRENT_DIR)
@@ -17,6 +19,47 @@ class ABBVerifier:
     """
     def __init__(self, config: LLMConfig = DEEPSEEK_CONFIG):
         self.llm = create_llm(config)
+        self.config = config
+
+    def _invoke_llm(self, prompt: str, purpose: str, **fields):
+        start = time.perf_counter()
+        log_dependency(
+            "dependency.llm.call_start",
+            component="ABBVerifier",
+            provider=str(self.config.provider),
+            model_name=self.config.model_name,
+            purpose=purpose,
+            ok=True,
+            **fields,
+        )
+        try:
+            response = self.llm.invoke(prompt)
+        except Exception as exc:
+            log_dependency(
+                "dependency.llm.call_error",
+                component="ABBVerifier",
+                provider=str(self.config.provider),
+                model_name=self.config.model_name,
+                purpose=purpose,
+                duration_ms=round((time.perf_counter() - start) * 1000, 2),
+                ok=False,
+                level="ERROR",
+                **fields,
+                **exc_meta(exc),
+            )
+            raise
+        log_dependency(
+            "dependency.llm.call_ok",
+            component="ABBVerifier",
+            provider=str(self.config.provider),
+            model_name=self.config.model_name,
+            purpose=purpose,
+            duration_ms=round((time.perf_counter() - start) * 1000, 2),
+            output_len=len(getattr(response, "content", "") or ""),
+            ok=True,
+            **fields,
+        )
+        return response
     
     def verify(self,original_text:str,expanded_text:str,standardization:dict):
         #检验缩写扩展是否可信
@@ -63,7 +106,7 @@ class ABBVerifier:
         }}
        
         """
-        response = self.llm.invoke(prompt)
+        response = self._invoke_llm(prompt, "sentence_verification")
         content = response.content.strip()
         #尝试解析json
         try:
@@ -169,7 +212,11 @@ class ABBVerifier:
         }}
         """
 
-        response = self.llm.invoke(prompt)
+        response = self._invoke_llm(
+            prompt,
+            "mapping_verification",
+            mapping_count=len(mapping_standardizations),
+        )
         content = response.content.strip()
         content = content.replace("```json", "").replace("```", "").strip()
 
@@ -224,7 +271,12 @@ class ABBVerifier:
         - Return raw valid JSON only, no markdown: {{"requeries": ["phrase one", "phrase two"]}}
         """
         try:
-            response = self.llm.invoke(prompt)
+            response = self._invoke_llm(
+                prompt,
+                "standardization_requery",
+                expansion=expansion,
+                seen_count=len(seen_concepts or []),
+            )
             content = response.content.strip().replace("```json", "").replace("```", "").strip()
             data = json.loads(content)
             out = []

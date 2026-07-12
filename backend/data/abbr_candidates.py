@@ -202,6 +202,42 @@ ABBR_CANDIDATES = {
         {"expansion": "nitroglycerin", "domain": "Drug"},
     ],
  
+    # Added from fallback_candidate_promotions at 2026-07-11 14:14:44
+    "ABG": [
+        {"expansion": "arterial blood gas", "domain": "Procedure"},
+    ],
+
+    "ASD": [
+        {"expansion": "Atrial Septal Defect", "domain": "Condition"},
+    ],
+
+    "BAL": [
+        {"expansion": "bronchoalveolar lavage", "domain": "Procedure"},
+    ],
+
+    "BM": [
+        {"expansion": "bone marrow", "domain": "Observation"},
+    ],
+
+    "BP": [
+        {"expansion": "blood pressure", "domain": "Procedure"},
+    ],
+
+    "DC": [
+        {"expansion": "Discharge", "domain": "Observation"},
+    ],
+
+    "ECG": [
+        {"expansion": "electrocardiogram", "domain": "Procedure"},
+    ],
+
+    "IM": [
+        {"expansion": "intramuscular", "domain": "Observation"},
+    ],
+
+    "RA": [
+        {"expansion": "rheumatoid arthritis", "domain": "Observation"},
+    ],
 }
 
 

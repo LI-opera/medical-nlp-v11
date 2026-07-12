@@ -8,6 +8,8 @@ sys.path.append(str(BACKEND_DIR))
 from evaluation.abbr_benchmark_cases import ABBR_BENCHMARK_CASES
 from services.abbr_service import ABBRService
 from evaluation.concept_match import compare_mappings_snomed
+from utils.structured_logger import exc_meta, log_benchmark, text_meta
+from utils.trace_context import get_job_id, new_job_id, new_request_id, trace_context
 def normalize_text(text:str) -> str:
     if text is None:
         return None
@@ -67,14 +69,40 @@ def compare_text_contains(final_text,expected_text_contains):
 
 
 def run_benchmark(cases=None, output_path=None, progress_callback=None):
+    job_id = get_job_id() or new_job_id("bench")
+    job_start = time.perf_counter()
     service = ABBRService()
     benchmark_cases = cases or ABBR_BENCHMARK_CASES
     total = len(benchmark_cases)
     correct = 0
     category_stats = {}
     results = []
+    log_benchmark(
+        "benchmark.job.start",
+        component="run_benchmark",
+        job_id=job_id,
+        total=total,
+        output_path=str(output_path or BACKEND_DIR / "evaluation" / "benchmark_results.json"),
+        ok=True,
+    )
 
     for index, case in enumerate(benchmark_cases, start=1):
+        # benchmark 的统计单位是 case。一句话内部的多个 record 只用于诊断，
+        # 但该句只计一次正确或错误，不按 record 数重复计算 accuracy。
+        case_start = time.perf_counter()
+        case_request_id = new_request_id("bench_case")
+        log_benchmark(
+            "benchmark.case.start",
+            component="run_benchmark",
+            job_id=job_id,
+            request_id=case_request_id,
+            case_id=case.get("id"),
+            category=case.get("category"),
+            current=index,
+            total=total,
+            ok=True,
+            **text_meta(case.get("text")),
+        )
         if progress_callback:
             progress_callback({
                 "current": index,
@@ -87,14 +115,28 @@ def run_benchmark(cases=None, output_path=None, progress_callback=None):
         result = None
         for _try in range(3):
             try:
-                result = service.expand_verify_with_retry(
-                    text=case["text"],
-                    max_retries=2
-                )
+                with trace_context(request_id=case_request_id, job_id=job_id, case_id=case.get("id")):
+                    result = service.expand_verify_with_retry(
+                        text=case["text"],
+                        max_retries=2
+                    )
                 break
             except Exception as e:
                 if _try == 2:
                     print(f"[WARN] {case['id']} failed after retries: {e}")
+                    log_benchmark(
+                        "benchmark.case.error",
+                        component="run_benchmark",
+                        job_id=job_id,
+                        request_id=case_request_id,
+                        case_id=case.get("id"),
+                        category=case.get("category"),
+                        try_count=_try + 1,
+                        duration_ms=round((time.perf_counter() - case_start) * 1000, 2),
+                        ok=False,
+                        level="ERROR",
+                        **exc_meta(e),
+                    )
                     result = {"final_result": {}, "success": False, "error": str(e)}
                 else:
                     time.sleep(3)
@@ -142,6 +184,24 @@ def run_benchmark(cases=None, output_path=None, progress_callback=None):
 
         if final_correct:
             category_stats[category]["correct"] += 1
+        log_benchmark(
+            "benchmark.case.end",
+            component="run_benchmark",
+            job_id=job_id,
+            request_id=case_request_id,
+            case_id=case.get("id"),
+            category=case.get("category"),
+            current=index,
+            total=total,
+            correct=final_correct,
+            mapping_correct=is_correct,
+            text_check_correct=text_check["correct"],
+            success=result.get("success"),
+            expansion_success=result.get("expansion_success"),
+            standardization_success=result.get("standardization_success"),
+            duration_ms=round((time.perf_counter() - case_start) * 1000, 2),
+            ok=True,
+        )
         
         results.append({
             "id": case["id"],
@@ -205,6 +265,17 @@ def run_benchmark(cases=None, output_path=None, progress_callback=None):
         )
 
     print(f"\nBenchmark results saved to: {output_path}")
+    log_benchmark(
+        "benchmark.job.end",
+        component="run_benchmark",
+        job_id=job_id,
+        total=total,
+        correct=correct,
+        accuracy=accuracy,
+        output_path=str(output_path),
+        duration_ms=round((time.perf_counter() - job_start) * 1000, 2),
+        ok=True,
+    )
 
 if __name__ == "__main__":
     run_benchmark()
