@@ -62,9 +62,9 @@ def _diff(expected, actual):
 
 
 def _write_mermaid(graph):
-    """将 Graph 结构写入项目梳理目录。"""
+    """将 Graph 结构写入 backend/graph，便于和 Graph 源码一起维护。"""
     mmd = graph.mermaid()
-    out = BACKEND_DIR.parent / "项目梳理" / "L3_pipeline.mmd"
+    out = BACKEND_DIR / "graph" / "L3_pipeline.mmd"
     out.write_text(mmd, encoding="utf-8")
     print("=== mermaid 已写入", out, "===\n")
     return out
