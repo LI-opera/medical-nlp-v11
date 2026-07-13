@@ -29,21 +29,21 @@ SOB -> shortness of breath -> Dyspnea
 CP  -> chest pain          -> Chest pain
 ```
 
-![](C:\Users\Administrator\Desktop\medical_nlp项目流程\github\analyze2.png)
+![](docs/images/analyze2.png)
 
 ### Benchmark：运行评估并查看失败分布
 
 上传包含 `cases` 列表的 JSON 文件，系统会运行整套 benchmark，并展示总数、正确数、失败数、accuracy 和分类统计。
 
-![](C:\Users\Administrator\Desktop\medical_nlp项目流程\github\overview.png)
+![](docs/images/overview.png)
 
 ### Error Analysis 与 Fallback Promotions
 
 错误分析页面将 benchmark 失败拆分为 benchmark mismatch、扩写阻断和标准化失败，并使用 LLM 生成“情况、可能原因、下一步建议”。Fallback Promotions 页面用于审核 fallback 成功且标准化成功的候选，再决定是否写入 primary 词典。
 
-![](C:\Users\Administrator\Desktop\medical_nlp项目流程\github\erroranalysis.png)
+![](docs\images\erroranalysis.png)
 
-![](C:\Users\Administrator\Desktop\medical_nlp项目流程\github\fallback.png)
+![](docs\images\fallback.png)
 
 ## 快速开始
 
