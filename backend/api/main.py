@@ -54,7 +54,7 @@ from evaluation.paths import (
 #导入FastAPI
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from utils.structured_logger import (
     exc_meta,
@@ -106,6 +106,15 @@ if FRONTEND_DIR.exists():
         "/frontend",
         StaticFiles(directory=str(FRONTEND_DIR)),
         name="frontend",
+    )
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    """兼容浏览器默认的 favicon 请求，避免产生无意义的 404 日志。"""
+    return FileResponse(
+        FRONTEND_DIR / "assets" / "favicon.png",
+        media_type="image/png",
     )
 
 #创建service对象
