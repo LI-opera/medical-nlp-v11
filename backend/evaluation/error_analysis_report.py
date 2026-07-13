@@ -360,40 +360,6 @@ def build_overall_failure_analysis(all_results: list[dict]) -> dict:
     }
 
 
-def build_legacy_business_diagnostics(all_results: list[dict]) -> dict:
-    business_non_success_cases = [
-        build_case_detail(result, issue_type="business_non_success")
-        for result in all_results
-        if not result.get("success")
-    ]
-    expansion_failure_cases = [
-        build_case_detail(result, issue_type="expansion_failure")
-        for result in all_results
-        if is_expansion_blocked(result)
-    ]
-    standardization_failure_cases = [
-        build_case_detail(result, issue_type="standardization_failure")
-        for result in all_results
-        if is_standardization_failure(result)
-    ]
-
-    return {
-        "business_non_success_count": len(business_non_success_cases),
-        "expansion_failure_count": len(expansion_failure_cases),
-        "standardization_failure_count": len(standardization_failure_cases),
-        "business_non_success_category_summary": summarize_case_categories(
-            business_non_success_cases
-        ),
-        "expansion_failure_category_summary": summarize_case_categories(
-            expansion_failure_cases
-        ),
-        "standardization_failure_category_summary": summarize_case_categories(
-            standardization_failure_cases
-        ),
-        "business_non_success_cases": business_non_success_cases,
-        "expansion_failure_cases": expansion_failure_cases,
-        "standardization_failure_cases": standardization_failure_cases,
-    }
 
 
 def main():
@@ -403,7 +369,6 @@ def main():
 
     all_results = benchmark_data["results"]
     failed_cases = [result for result in all_results if not result["correct"]]
-    business_success_count = sum(1 for result in all_results if result.get("success"))
     expansion_success_count = sum(1 for result in all_results if result.get("expansion_success"))
     standardization_success_count = sum(
         1 for result in all_results if result.get("standardization_success")
@@ -433,9 +398,6 @@ def main():
             "total_cases": benchmark_data["total"],
             "correct": benchmark_data["correct"],
             "accuracy": benchmark_data["accuracy"],
-            "business_success_count": benchmark_data.get(
-                "business_success_count", business_success_count
-            ),
             "expansion_success_count": benchmark_data.get(
                 "expansion_success_count", expansion_success_count
             ),
@@ -474,7 +436,6 @@ def main():
             "coverage_issue_summary": summarize_coverage_issues(all_results),
             "suggestion_summary": summarize_suggestions(all_results),
         },
-        "business_diagnostic_cases": build_legacy_business_diagnostics(all_results),
         "failed_cases": failed_case_details,
     }
 

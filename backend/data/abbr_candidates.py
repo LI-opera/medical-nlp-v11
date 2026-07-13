@@ -201,8 +201,7 @@ ABBR_CANDIDATES = {
     "NTG": [
         {"expansion": "nitroglycerin", "domain": "Drug"},
     ],
- 
-    
+
     # Added from fallback_candidate_promotions at 2026-07-12 15:37:27
     "RA": [
         {"expansion": "Rheumatoid Arthritis", "domain": "Condition"},

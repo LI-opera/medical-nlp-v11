@@ -3,7 +3,7 @@ import { renderFailureTypePie, selectedFailureBucket } from "../components/failu
 import { renderFilteredTriage } from "../components/triage_report.js";
 
 export function createErrorAnalysis({ state, fetchJson, frontendLogger, errorType, errorSummary, render }) {
-  async function loadErrors() {
+  async function loadErrors({ renderPage = true } = {}) {
     const startedAt = performance.now();
     state.errorsError = "";
     try {
@@ -28,7 +28,7 @@ export function createErrorAnalysis({ state, fetchJson, frontendLogger, errorTyp
         error_summary: errorSummary(error),
       });
     }
-    render();
+    if (renderPage) render();
   }
 
   function renderErrors() {

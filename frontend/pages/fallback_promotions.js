@@ -7,7 +7,7 @@ export function createFallbackPromotions({ state, fetchJson, frontendLogger, err
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
-  async function loadPromotions() {
+  async function loadPromotions({ renderPage = true } = {}) {
     const startedAt = performance.now();
     state.promotionsError = "";
     try {
@@ -22,7 +22,7 @@ export function createFallbackPromotions({ state, fetchJson, frontendLogger, err
       state.promotionsError = error.message;
       frontendLogger.error("ui.promotions.load_error", { duration_ms: Math.round(performance.now() - startedAt), error_type: errorType(error), error_summary: errorSummary(error) });
     }
-    render();
+    if (renderPage) render();
   }
 
   async function applyPromotions() {

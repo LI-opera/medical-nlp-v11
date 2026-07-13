@@ -9,7 +9,7 @@ services:
       ETCD_SNAPSHOT_COUNT: "50000"
     command: >
       etcd
-      -advertise-client-urls=http://127.0.0.1:2379
+      -advertise-client-urls=http://etcd:2379
       -listen-client-urls=http://0.0.0.0:2379
       --data-dir=/etcd
     volumes:
@@ -20,8 +20,8 @@ services:
     image: minio/minio:RELEASE.2024-12-18T13-15-44Z
     container_name: medical-nlp-minio
     environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     command: minio server /minio_data
     volumes:
       - minio_data:/minio_data

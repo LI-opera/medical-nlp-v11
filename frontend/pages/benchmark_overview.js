@@ -15,12 +15,30 @@ export function createBenchmarkOverview({
   errorSummary,
   truncate,
   render,
+  onBenchmarkCompleted,
 }) {
+  let activeUploadToken = 0;
+
+  function updateUploadView() {
+    if (state.route !== "benchmarkOverview") return;
+    const status = document.getElementById("benchmarkUploadStatus");
+    if (status) status.innerHTML = renderBenchmarkUploadStatus();
+    const button = document.getElementById("uploadBenchmarkButton");
+    if (button) {
+      button.disabled = Boolean(state.benchmarkUploading);
+      button.textContent = state.benchmarkUploading ? "运行中..." : "上传 cases 并运行";
+    }
+  }
+
+  function isCurrentUpload(token, jobId = null) {
+    return token === activeUploadToken
+      && (!jobId || state.benchmarkUploadJob?.id === jobId);
+  }
   function sleep(ms) {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
-  async function loadBenchmark() {
+  async function loadBenchmark({ renderPage = true } = {}) {
     const startedAt = performance.now();
     state.benchmarkError = "";
     try {
@@ -39,13 +57,14 @@ export function createBenchmarkOverview({
         error_summary: errorSummary(error),
       });
     }
-    render();
+    if (renderPage) render();
   }
 
   async function uploadBenchmarkFile(file) {
     if (!file || state.benchmarkUploading) return;
 
     const startedAt = performance.now();
+    const uploadToken = ++activeUploadToken;
     frontendLogger.info("ui.benchmark.upload_click", {
       file_name: file.name,
       file_size: file.size,
@@ -98,7 +117,7 @@ export function createBenchmarkOverview({
 
       state.benchmarkUploadJob = job;
       state.benchmarkUploadProgress = Number(job.progress || 2);
-      render();
+      updateUploadView();
 
       let latest = job;
       let lastLoggedStage = latest.stage || latest.status || "";
@@ -106,6 +125,7 @@ export function createBenchmarkOverview({
       while (latest.status !== "completed" && latest.status !== "failed") {
         await sleep(1000);
         latest = await fetchJson(`/benchmark/cases/jobs/${encodeURIComponent(job.id)}`);
+        if (!isCurrentUpload(uploadToken, job.id)) return;
         state.benchmarkUploadJob = latest;
         state.benchmarkUploadProgress = Number(latest.progress || state.benchmarkUploadProgress || 0);
         const currentStage = latest.stage || latest.status || "";
@@ -122,7 +142,7 @@ export function createBenchmarkOverview({
           lastLoggedStage = currentStage;
           lastLoggedProgressBucket = currentProgressBucket;
         }
-        render();
+        updateUploadView();
       }
 
       if (latest.status === "failed") {
@@ -148,12 +168,8 @@ export function createBenchmarkOverview({
       });
       state.benchmarkUploadProgress = 100;
       state.benchmarkUploadResult = latest.result;
-      state.errors = null;
-      state.triage = null;
-      state.errorsError = "";
-      state.promotions = null;
-      state.promotionsError = "";
-      await loadBenchmark();
+      await onBenchmarkCompleted?.();
+      await loadBenchmark({ renderPage: state.route === "benchmarkOverview" });
       state.benchmarkUploadProgress = 100;
     } catch (error) {
       state.benchmarkUploadError = error.message;
@@ -166,7 +182,7 @@ export function createBenchmarkOverview({
       });
     } finally {
       state.benchmarkUploading = false;
-      render();
+      updateUploadView();
     }
   }
 
@@ -321,7 +337,7 @@ export function createBenchmarkOverview({
             </button>
           </div>
         </div>
-        <div class="panel-body">
+        <div class="panel-body" id="benchmarkUploadStatus">
           ${renderBenchmarkUploadStatus()}
         </div>
       </section>

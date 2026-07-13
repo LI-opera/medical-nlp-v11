@@ -1,12 +1,12 @@
 import { configureApiClient, fetchJson } from "./api/client.js";
 import { state } from "./state/store.js";
 import { createAnalyzeActions, createAnalyzeRenderer } from "./pages/analyze.js";
-import { createBenchmarkOverview } from "./pages/benchmark_overview.js";
+import { createBenchmarkOverview } from "./pages/benchmark_overview.js?v=20260713-benchmark-decouple-2";
 import { createErrorAnalysis } from "./pages/error_analysis.js";
 import { createFallbackPromotions } from "./pages/fallback_promotions.js";
-import { renderPromotionConfirmModal, renderSinglePromotionConfirmModal } from "./components/modal.js";
+import { renderPromotionConfirmModal, renderSinglePromotionConfirmModal } from "./components/modal.js?v=20260713-benchmark-decouple-2";
 import { createRouter } from "./router.js";
-import { createShell } from "./components/shell.js";
+import { createShell } from "./components/shell.js?v=20260713-benchmark-decouple-2";
 const samples = [
   "The patient has SOB and CP.",
   "The patient has RA with joint pain and morning stiffness.",
@@ -92,6 +92,17 @@ const {
   errorSummary,
   truncate,
   render: () => render(),
+  onBenchmarkCompleted: async () => {
+    state.errors = null;
+    state.triage = null;
+    state.errorsError = "";
+    state.promotions = null;
+    state.promotionsError = "";
+
+    // 只刷新当前所在的 benchmark 子页面，Analyze 保持原页面状态不变。
+    if (state.route === "benchmarkErrors") await loadErrors({ renderPage: true });
+    if (state.route === "benchmarkPromotions") await loadPromotions({ renderPage: true });
+  },
 });
 
 const {
