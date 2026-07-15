@@ -414,6 +414,7 @@ benchmark_results.json
 
 ```text
 medical-nlp/
+├─ .github/workflows/ci.yml       # GitHub Actions 默认测试流程
 ├─ backend/
 │  ├─ api/
 │  │  ├─ main.py                 # FastAPI 入口、静态前端和业务 API
@@ -437,21 +438,39 @@ medical-nlp/
 │  │  └─ trace_context.py          # request_id / job_id 上下文
 │  ├─ evaluation/
 │  │  ├─ run_benchmark.py         # 串行/并行统一入口
+│  │  ├─ performance_report.py    # Benchmark 性能报告
 │  │  ├─ error_analysis_report.py # 结构化错误分析
 │  │  ├─ error_triage.py          # LLM 人话解释
 │  │  ├─ collect_fallback_candidate_promotions.py
 │  │  ├─ apply_fallback_candidate_promotions.py
 │  │  └─ paths.py                 # runtime/archive 路径管理
-│  ├─ tools/milvus/               # SNOMED / RxNorm 建库工具
+│  ├─ evaluation/runtime/          # 当前运行生成的评估结果
+│  ├─ evaluation/archive/          # 历史评估结果归档
+│  ├─ tests/                       # 自动化测试与历史手动测试
+│  │  ├─ unit/                     # 默认执行的纯逻辑测试
+│  │  ├─ api/                      # 默认执行的 API 合同测试
+│  │  ├─ integration/              # 可选 Milvus 集成测试
+│  │  ├─ live/                     # 可选真实服务测试
+│  │  ├─ manual/                   # 历史手动测试脚本
+│  │  ├─ pytest_ci_implementation.md
+│  │  └─ TEST_INVENTORY.md
+│  ├─ pytest.ini                   # pytest 路径、标记和默认规则
+│  ├─ requirements-dev.txt         # pytest、Ruff 等开发依赖
+│  ├─ tools/milvus/                # SNOMED / RxNorm 建库工具
 │  └─ graph/                      # LangGraph 流程实验与可视化
 ├─ examples/benchmarks/           # benchmark 样例
+├─ docs/                           # 项目技术文档与 README 图片
+│  ├─ images/                      # README 演示截图
+│  ├─ V11系统架构设计.md
+│  └─ V11性能指标采集实施记录.md
 ├─ frontend/
 │  ├─ app.js / router.js          # 应用装配与路由
 │  ├─ api/client.js               # API 请求和 request_id
 │  ├─ state/store.js              # 前端运行状态
 │  ├─ pages/                      # 各业务页面
 │  ├─ components/                 # 弹窗、图表、进度和报告组件
-│  ├─ utils/frontend_logger.js    # 前端日志 buffer 与上报
+│  ├─ utils/                      # 日志、格式化和 triage 解析工具
+│  ├─ assets/                     # favicon 和侧边栏素材
 │  └─ styles.css
 ├─ Dockerfile
 ├─ docker-compose.yml
