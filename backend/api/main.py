@@ -9,7 +9,6 @@ FastAPI 接收 text
 """
 
 #处理导入路径
-import os
 import sys
 import json
 import threading
@@ -28,7 +27,6 @@ from api.schemas import (
     BenchmarkSummaryResponse,
     ErrorAnalysisSummaryResponse,
     ExpandRequest,
-    ExpandResponse,
     SimpleExpandResponse,
 )
 from services.abbr_service import ABBRService

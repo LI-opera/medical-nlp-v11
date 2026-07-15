@@ -15,6 +15,8 @@ BENCHMARK_RESULTS_PATH = RUNTIME_DIR / "benchmark_results.json"
 ERROR_ANALYSIS_REPORT_PATH = RUNTIME_DIR / "error_analysis_report.json"
 FALLBACK_PROMOTIONS_JSON_PATH = RUNTIME_DIR / "fallback_candidate_promotions.json"
 FALLBACK_PROMOTIONS_MD_PATH = RUNTIME_DIR / "fallback_candidate_promotions.md"
+PERFORMANCE_REPORT_JSON_PATH = RUNTIME_DIR / "performance_report.json"
+PERFORMANCE_REPORT_MD_PATH = RUNTIME_DIR / "performance_report.md"
 
 
 def rollover_runtime_to_archive() -> list[str]:

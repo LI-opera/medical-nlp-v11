@@ -513,6 +513,49 @@ localStorage.setItem("medicalNlpFrontendLogConsole", "1")
 localStorage.removeItem("medicalNlpFrontendLogConsole")
 ```
 
+## 测试与质量保证
+
+项目使用 `pytest` 建立自动化测试体系，并通过 GitHub Actions 执行默认 CI。
+
+当前默认测试覆盖：
+
+- success 统计与标准化状态判定；
+- 确定性缩写替换；
+- Benchmark 分类统计；
+- fallback 候选沉淀筛选；
+- FastAPI 基础接口合同。
+
+默认测试不依赖真实 LLM、BGE-M3、Milvus 或 Docker 服务，因此可以在干净环境中稳定运行。
+
+在 `backend` 目录执行：
+
+```powershell
+..\.venv\Scripts\python.exe -m pytest -q
+```
+
+当前默认测试结果：
+
+```text
+14 passed, 2 deselected
+```
+
+项目还预留了两类非默认测试：
+
+- `integration`：真实 Milvus 集成测试；
+- `live`：真实 LLM、Embedding、Milvus 链路测试。
+
+它们需要显式启用：
+
+```powershell
+$env:RUN_INTEGRATION="1"
+..\.venv\Scripts\python.exe -m pytest -m integration -q
+
+$env:RUN_LIVE="1"
+..\.venv\Scripts\python.exe -m pytest -m live -q
+```
+
+默认 CI 不运行真实服务测试，避免测试过程依赖外部服务或产生额外费用。详细测试目录、文件清单和运行边界见 [`backend/tests/README.md`](backend/tests/README.md) 与 [`backend/tests/TEST_INVENTORY.md`](backend/tests/TEST_INVENTORY.md)。
+
 ## 当前边界与后续方向
 
 当前系统的主要边界：
@@ -526,9 +569,10 @@ localStorage.removeItem("medicalNlpFrontendLogConsole")
 后续可以扩展：
 
 - 增加 `/full-standardize`，对完整临床文本执行 NER 与实体标准化。
-- 增加 Milvus 自动建库初始化服务。
-- 增加 GitHub Actions 的静态检查、单元测试和基础 API 检查。
-- 增加更完整的 benchmark 版本管理和回归测试。
+- 增加更完整的 Benchmark 数据版本管理、固定数据集回归和串行/并行对照。
+- 将 integration/live 测试接入可控的 Docker 验证流程，而不是接入默认 CI。
+- 继续拆分和完善 Embedding、Milvus、LLM 等依赖阶段的可观测性。
+- 根据真实使用反馈补充医学实体类型、药品标准化和完整临床文本处理能力。
 
 ## License
 
